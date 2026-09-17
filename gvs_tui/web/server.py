@@ -244,13 +244,14 @@ class RunManager:
     def is_busy(self):
         return self.state_name in ("running", "paused")
 
-    def start(self, task_text, profile, model, max_iters, verifier, tests, fresh=True):
+    def start(self, task_text, profile, model, max_iters, verifier, tests,
+              fresh=True, ws=None):
         with self._lock:
             if self.is_busy():
                 raise RuntimeError("a run is already active")
             self.control = Control()
             self.state_name = "running"
-            self.ws = None
+            self.ws = ws
             self.profile = profile
             self.model = model
             self.started_at = time.time()
@@ -258,12 +259,13 @@ class RunManager:
             self._n_calls = 0
         t = threading.Thread(
             target=self._worker,
-            args=(task_text, profile, model, max_iters, verifier, tests, fresh),
+            args=(task_text, profile, model, max_iters, verifier, tests, fresh, ws),
             daemon=True)
         self.thread = t
         t.start()
 
-    def _worker(self, task_text, profile, model, max_iters, verifier, tests, fresh):
+    def _worker(self, task_text, profile, model, max_iters, verifier, tests,
+                fresh, ws=None):
         try:
             status = run_loop(
                 task_text, profile, model,
@@ -272,7 +274,7 @@ class RunManager:
                 control=self.control,
                 events=self._on_loop_event,
                 log=lambda *a: None, fresh=fresh,
-                search=SEARCH_PROVIDER)
+                search=SEARCH_PROVIDER, ws=ws)
             self.status = status
             self.state_name = "stopped" if status.get("stopped") else "done"
         except Exception as e:  # noqa: BLE001 - surfaced to the client
@@ -418,11 +420,16 @@ def ensure_workspace(st, task):
     return st.current_ws
 
 
-def start_run(st, task, fresh=True):
+def start_run(st, task, fresh=True, ws=None):
     """Start a run for ``task``. Returns ``(ok, message)``.
 
     Shared by the ``/api/run`` endpoint and the manager-chat ``RUN:`` trigger so
     the manager can kick off a run itself, not just the user.
+
+    The run is pinned to a workspace so the chat and run never de-sync: if
+    ``ws`` is given (the triggering chat's workspace) pin to it, else if there
+    is a current workspace pin to it, else derive a fresh one from the task.
+    In every case the workspace's ``task.md`` is set to ``task``.
     """
     if st.runs.is_busy():
         return False, "a run is already active"
@@ -430,28 +437,40 @@ def start_run(st, task, fresh=True):
     if not task:
         return False, "no task yet -- send a task in the chat first"
     apply_config(st.cfg)
-    ensure_workspace(st, task)
-    profile = safe_profile(st.cfg.profile)
+    pin_ws = ws if (ws and os.path.isdir(ws)) else (
+        st.current_ws if (st.current_ws and os.path.isdir(st.current_ws)) else None)
+    if pin_ws:
+        st.current_ws = pin_ws
+        if (ledger.read(pin_ws, "task.md") or "").strip() != task:
+            ledger.write(pin_ws, "task.md", task)
+        if not st.current_profile:
+            st.current_profile = safe_profile(st.cfg.profile)
+    else:
+        ensure_workspace(st, task)
+        pin_ws = st.current_ws
+    st.current_task = task
+    profile = st.current_profile or safe_profile(st.cfg.profile)
     if st.cfg.temperature is not None:
         profile = dataclasses.replace(
             profile, temps={k: st.cfg.temperature for k in profile.temps})
     st.current_profile = profile
-    st.current_task = task
     tests = parse_tests(st.cfg.tests)
     verifier = run_python_tests if (profile.kind == "code" and tests) else None
     if not st.cfg.model:
         return False, "no model configured -- set it in Settings"
     st.runs.start(task, profile, f"compat:{st.cfg.model}",
-                  st.cfg.max_iters, verifier, tests, fresh=fresh)
+                  st.cfg.max_iters, verifier, tests, fresh=fresh, ws=pin_ws)
     return True, "started"
 
 
-def _maybe_start_run(st, manager_text):
+def _maybe_start_run(st, manager_text, ws=None):
     """If the manager's reply carries a ``RUN:`` marker, start the run.
 
     The convention (see the manager system prompt): end a reply with
     ``RUN: <task>`` to run a (refined) task, or ``RUN:`` alone to run the
-    current task. This lets the manager kick off a run itself.
+    current task. This lets the manager kick off a run itself. ``ws`` is the
+    workspace the triggering chat lives in; the run is pinned to it so the
+    chat and run never de-sync.
     """
     m = re.search(r"^RUN:\s*(.*)$", manager_text, re.M)
     if not m:
@@ -460,7 +479,7 @@ def _maybe_start_run(st, manager_text):
     if not task:
         st.hub.post("manager", "I need a task to run -- tell me what to work on.")
         return
-    ok, msg = start_run(st, task, fresh=True)
+    ok, msg = start_run(st, task, fresh=True, ws=ws)
     if ok:
         st.hub.post("manager", f"Starting the run on: {task[:100]}")
     else:
@@ -632,14 +651,15 @@ def create_app(state: ServerState | None = None) -> FastAPI:
             raise HTTPException(400, "empty message")
         apply_config(st.cfg)
         ensure_workspace(st, text)
+        ws = st.current_ws  # pin any RUN: this chat triggers to this workspace
         st.hub.post_user(text)
-        msgs = manager_messages(st.current_ws, text, st.current_profile)
+        msgs = manager_messages(ws, text, st.current_profile)
         if not st.cfg.model:
             st.hub.post("manager",
                         "No model configured yet -- set the model in Settings, then I can get to work.")
             return {"ok": True}
         st.hub.stream_manager(msgs, st.cfg.model,
-                              on_complete=lambda t: _maybe_start_run(st, t))
+                              on_complete=lambda t: _maybe_start_run(st, t, ws))
         return {"ok": True}
 
     # ---- run control ----

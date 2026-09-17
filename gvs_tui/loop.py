@@ -202,11 +202,13 @@ def run_loop(task_text, profile, model,
              ws_root=None, max_iters=None, max_tasks=None,
              verifier=None, tests=None,
              control=None, events=None, log=None, fresh=True,
-             search=None):
+             search=None, ws=None):
     """Run the full orchestration loop for one task. Returns a status dict.
 
     ``fresh`` starts a clean ledger. When False the existing ledger is kept and
-    the loop continues from its current state (resume).
+    the loop continues from its current state (resume). If ``ws`` is given, the
+    run is pinned to that workspace (instead of deriving one from the task
+    slug), so a run and its triggering chat always share the same workspace.
     """
     control = control or Control()
     events = events or (lambda *a: None)
@@ -226,7 +228,8 @@ def run_loop(task_text, profile, model,
                 pass
         events("log", {"line": msg})
 
-    ws = os.path.join(ws_root, ledger.slug(task_text))
+    if ws is None:
+        ws = os.path.join(ws_root, ledger.slug(task_text))
     if fresh:
         ledger.init_workspace(ws, profile.artifact_file, task_text)
     else:

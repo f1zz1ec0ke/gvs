@@ -158,6 +158,44 @@ def test_manager_thinking_and_run():
     print("Manager thinking + RUN dispatch: OK")
 
 
+def test_run_pinned_to_chat_workspace():
+    # A RUN: with a *refined* task must stay in the chat's workspace, not
+    # spawn a new one derived from the refined task's slug (the de-sync bug).
+    st = ServerState()
+    st.cfg.model = "gvs"
+    st.cfg.profile = "general"
+    st.cfg.max_iters = 3
+    app = create_app(st)
+
+    refined = "A refined task that is definitely different from the chat task."
+
+    def run_stream(model, messages, temperature=0.2, meta=None):
+        yield ("content", "Starting now.\n")
+        yield ("content", f"RUN: {refined}")
+        if meta is not None:
+            meta["finish_reason"] = "stop"
+            meta["content"] = f"Starting now.\nRUN: {refined}"
+
+    orig = server.compat_chat_stream
+    server.compat_chat_stream = run_stream
+    try:
+        with TestClient(app) as client:
+            client.post("/api/chat", json={"message": "Original chat task."})
+            # wait until the run has started AND its workspace is known
+            wait_for(client, lambda s: s["run"]["state"] != "idle" and s["run"]["ws"])
+            s = client.get("/api/state").json()
+            chat_ws = s["current"]["ws"]
+            run_ws = s["run"]["ws"]
+            assert chat_ws and run_ws, f"missing ws: chat={chat_ws} run={run_ws}"
+            assert chat_ws == run_ws, f"de-sync: chat {chat_ws} != run {run_ws}"
+            # the refined task should be recorded in the shared workspace
+            assert server.ledger.read(run_ws, "task.md").strip() == refined, \
+                f"task.md not updated: {server.ledger.read(run_ws, 'task.md')!r}"
+    finally:
+        server.compat_chat_stream = orig
+    print("Run pinned to chat workspace: OK")
+
+
 def test_open_and_continue():
     # seed a run, then reopen it and continue
     st = ServerState()
@@ -297,6 +335,7 @@ if __name__ == "__main__":
     test_rest_flow()
     test_websocket_stream()
     test_manager_thinking_and_run()
+    test_run_pinned_to_chat_workspace()
     test_open_and_continue()
     test_file_browser()
     test_file_browser_tool_written()
