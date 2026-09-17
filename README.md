@@ -14,7 +14,8 @@ each other directly; they coordinate only through a **shared filesystem ledger**
 |---|---|
 | `task.md` | the task text (immutable) |
 | `plan.md` | the manager's overarching plan |
-| `notes.md` | shared notes, **rewritten** by each worker (last writer wins) |
+| `notes.md` | the **curated** shared notes — **rewritten** by each worker (bounded, high-signal) |
+| `notes.log.md` | the **append-only** history — each role's concise delta (lossless audit trail) |
 | `tasks.json` | the manager's live task list |
 | `out/` | **the deliverable** — every file the task calls for (one or many) |
 | `transcript.jsonl` | one line per model call (request, response, usage) |
@@ -25,8 +26,9 @@ The loop:
 2. **ideation** — a first worker proposes several *distinct* approaches (prose only).
 3. **primary_manage** — the manager curates the task list and picks the **one** next task,
    or declares `done`.
-4. **worker** — a fresh worker does that one task, rewrites `notes.md`, writes its
-   deliverable file(s) under `out/`, and proposes next steps.
+4. **worker** — a fresh worker does that one task, rewrites the curated `notes.md`, appends a
+   concise entry to the append-only `notes.log.md`, writes its deliverable file(s) under
+   `out/`, and proposes next steps.
 5. **(verifier)** — optional ground-truth check of the deliverable (e.g. run sample tests
    against `out/`), fed back to the manager as a pass/fail verdict.
 6. Repeat 3–5 until the manager says `done` (and a deliverable exists in `out/`), the

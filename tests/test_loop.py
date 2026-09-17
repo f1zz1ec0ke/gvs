@@ -75,12 +75,19 @@ def main():
     assert "primary_manage" in roles
 
     # 5) ledger files all present (deliverable lives in out/)
-    for name in ("task.md", "plan.md", "notes.md", "tasks.json", "out", "transcript.jsonl"):
+    for name in ("task.md", "plan.md", "notes.md", "notes.log.md", "tasks.json",
+                 "out", "transcript.jsonl"):
         assert os.path.exists(os.path.join(s1["ws"], name)), f"missing {name}"
+    # the append-only history has at least one worker entry
+    log = ledger.read(s1["ws"], "notes.log.md")
+    assert "## worker:" in log, f"notes.log.md has no worker entry: {log!r}"
     tasks = ledger.load_tasks(s1["ws"])
     print("final task list (code run):")
     for t in tasks:
         print(f"  [{t['status']}] {t['desc']}")
+    print("notes.log.md (code run):")
+    for line in log.splitlines():
+        print(f"    | {line}")
 
     print("\nALL LOOP TESTS PASSED")
 

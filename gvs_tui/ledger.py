@@ -139,9 +139,25 @@ def init_workspace(ws, task_text):
     """Create a fresh ledger for one task (deliverable goes in ``out/``)."""
     os.makedirs(ws, exist_ok=True)
     os.makedirs(_out_base(ws), exist_ok=True)
-    for name in ("task.md", "notes.md", "transcript.jsonl", "plan.md", "tasks.json"):
+    for name in ("task.md", "notes.md", "notes.log.md", "transcript.jsonl",
+                "plan.md", "tasks.json"):
         write(ws, name, "")
     write(ws, "task.md", task_text)
+
+
+def append_log(ws, role, entry):
+    """Append one concise, append-only history entry to ``notes.log.md``.
+
+    ``notes.md`` is the curated shared state (rewritten each turn); ``notes.log.md``
+    is the lossless, append-only trail of each role's delta. Each entry is short by
+    design (the role is prompted to keep it to a sentence or two).
+    """
+    entry = (entry or "").strip()
+    if not entry:
+        entry = "(no entry)"
+    entry = entry[:600]
+    with open(_path(ws, "notes.log.md"), "a", encoding="utf-8") as f:
+        f.write(f"\n## {role}\n{entry}\n")
 
 
 def record(ws, rec):

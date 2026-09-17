@@ -135,6 +135,11 @@ def _worker_prompt(profile, goal):
         "markdown headings (#, ##), bold-only lines, or ALLCAPS: lines anywhere inside this "
         "section -- the reply is split on those, so they would truncate your notes.>\n"
     )
+    log_fmt = (
+        "### LOG\n<one or two short bullets (under ~30 words) of what you FOUND, DECIDED, or "
+        "DROPPED this turn -- the delta only, not a restatement of the notes. The loop appends "
+        "this verbatim to the append-only 'notes.log.md' history; you do not edit that file.>\n"
+    )
     deliverable = ("Write EVERY deliverable file under the 'out/' directory using write_file "
                    "(create the directory; everything under 'out/' is the deliverable). "
                    "A task may need one file or many (e.g. a website is index.html + css + js).")
@@ -143,6 +148,7 @@ def _worker_prompt(profile, goal):
     final_fmt = (
         "### STATUS\n<solved|continue>\n"
         "### NEXT\n<bullet list of remaining steps, or 'none'>\n"
+        + log_fmt
         + notes_fmt
     )
     return (
@@ -150,9 +156,12 @@ def _worker_prompt(profile, goal):
         + (profile.worker_extra + " " if profile.worker_extra else "")
         + "You have a shared workspace and FILE TOOLS. Use them to ACTUALLY create and edit "
         "files -- do not merely describe files you 'wrote'. " + deliverable
-        + " You may also create other files (drafts) as needed, and you should rewrite "
-        "'notes.md' with your findings. If a 'research.md' file exists (from a researcher), "
-        "read it with read_file and use its findings.\n"
+        + " You may also create other files (drafts) as needed. You maintain TWO notes files: "
+        "'notes.md' is the curated shared state -- REWRITE it each turn (under ~800 words); "
+        "'notes.log.md' is an append-only history you do NOT edit (the loop appends your "
+        "### LOG entry to it). If a fact seems missing from 'notes.md', read 'notes.log.md' "
+        "to recover it. If a 'research.md' file exists (from a researcher), read it with "
+        "read_file and use its findings.\n"
         + tools.TOOL_PROTOCOL
         + "Build on the current work and notes where useful -- but if your task is to try a "
         "different approach, produce a FRESH deliverable for that approach instead of "
@@ -167,6 +176,11 @@ def _researcher_prompt(profile, goal):
     notes_fmt = (
         "### NOTES\n<the COMPLETE notes file, rewritten. Fold the key research findings "
         "into it (with source URLs) so the workers see the essence. Keep it under ~800 words.>\n"
+    )
+    log_fmt = (
+        "### LOG\n<one or two short bullets (under ~30 words) of what you FOUND this turn -- "
+        "the key facts/sources, not a restatement of the notes. Appended to the append-only "
+        "'notes.log.md' history by the loop; you do not edit that file.>\n"
     )
     return (
         f"You are a RESEARCHER subagent, {profile.solver_system} "
@@ -185,6 +199,7 @@ def _researcher_prompt(profile, goal):
         + "When you are done, respond with EXACTLY these sections and NO tool block:\n"
         "### STATUS\n<solved|continue>\n"
         "### NEXT\n<bullet list of remaining steps, or 'none'>\n"
+        + log_fmt
         + notes_fmt
     )
 
@@ -547,6 +562,15 @@ def _worker(task_text, profile, ws, task, chat, say, last_meta, finalize=False, 
             and sec.get("NOTES") and last_meta.get("finish_reason") != "length"):
         ledger.write(ws, "notes.md", sec["NOTES"].strip()[:ledger.MAX_PLAN_CHARS * 2] + "\n")
 
+    # Append the concise delta to the append-only history (notes.log.md).
+    if last_meta.get("finish_reason") == "length":
+        log_entry = "cut off at the token limit before finishing"
+    else:
+        log_entry = sec.get("LOG", "").strip()
+        if not log_entry:
+            log_entry = f"reported '{sec.get('STATUS', 'continue').strip().lower()}'"
+    ledger.append_log(ws, role, log_entry)
+
     nexts = [b for b in ledger.bullets(sec.get("NEXT", "")) if b.lower() != "none"]
     status = sec.get("STATUS", "continue").strip().lower()
     if last_meta.get("finish_reason") == "length" and not finalize:
@@ -594,6 +618,10 @@ def _researcher(task_text, profile, ws, task, chat, say, last_meta, chat_tools, 
     if (ledger.read(ws, "notes.md").strip() == before_notes.strip()
             and sec.get("NOTES") and last_meta.get("finish_reason") != "length"):
         ledger.write(ws, "notes.md", sec["NOTES"].strip()[:ledger.MAX_PLAN_CHARS * 2] + "\n")
+    # Append the concise delta to the append-only history (notes.log.md).
+    log_entry = sec.get("LOG", "").strip() or \
+        f"reported '{sec.get('STATUS', 'continue').strip().lower()}'"
+    ledger.append_log(ws, role, log_entry)
     # Fallback: if research.md wasn't written via a tool, write the findings there.
     # Strip any tool block so a raw tool call is never written to the file.
     if not ledger.read(ws, "research.md").strip():

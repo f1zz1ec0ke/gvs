@@ -417,6 +417,7 @@ def mock_chat(model, messages, temperature=0.2, meta=None):
         if "TOOL RESULT" in user:
             return ("### STATUS\nsolved\n"
                     "### NEXT\nnone\n"
+                    "### LOG\n- Wrote the deliverable to out/.\n"
                     "### NOTES\n- **Status:** deliverable written to out/.\n")
         task = _mock_task_of(user)
         if _mock_is_code(_mock_original_task(user)):
