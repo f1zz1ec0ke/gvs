@@ -303,8 +303,8 @@ def run_loop(task_text, profile, model,
             result = tools.run_tool(call["name"], call["args"], ws, read_only=read_only,
                                     web=web, search_provider=search_provider)
             tool_log.append({"name": call["name"], "args": call["args"], "result": result})
-            say(f"    [tool:{role}] {call['name']}({_short_args(call['args'])}) -> "
-                f"{result.splitlines()[0][:90]}")
+            first = (result.splitlines() or ["(empty)"])[0][:90]
+            say(f"    [tool:{role}] {call['name']}({_short_args(call['args'])}) -> {first}")
             msgs.append({"role": "assistant", "content": resp})
             msgs.append({"role": "user", "content":
                         f"TOOL RESULT for {call['name']}:\n{result}\n\n"

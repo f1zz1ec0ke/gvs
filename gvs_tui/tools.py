@@ -16,6 +16,8 @@ holding one JSON object, so it works on any OpenAI-compatible endpoint.
 import os
 import re
 import json
+import gzip
+import hashlib
 import urllib.request
 import urllib.error
 
@@ -70,6 +72,14 @@ def file_listing(ws):
     return "\n".join(f"  {f['name']}  ({f['size']} bytes)" for f in files)
 
 
+def _slug_url(url):
+    """A stable, filesystem-safe filename for a fetched URL (hash + readable path)."""
+    h = hashlib.sha1(str(url).encode("utf-8")).hexdigest()[:10]
+    tail = str(url).split("://", 1)[-1]
+    tail = re.sub(r"[^A-Za-z0-9._-]", "_", tail)[:60] or "page"
+    return f"{h}_{tail}"
+
+
 # --- tool execution ----------------------------------------------------------
 
 def execute_tool(name, args, ws, read_only=False, web=False, search_provider=None):
@@ -98,6 +108,8 @@ def execute_tool(name, args, ws, read_only=False, web=False, search_provider=Non
             text = raw.decode("utf-8")
         except UnicodeDecodeError:
             return f"ERROR: {args.get('path')} is not UTF-8 text"
+        if not text.strip():
+            return "(empty file)"
         note = "\n[truncated: file is larger than the read cap]" if truncated else ""
         return text + note
     if read_only and name in ("write_file", "append_file"):
@@ -153,19 +165,38 @@ def execute_tool(name, args, ws, read_only=False, web=False, search_provider=Non
             req = urllib.request.Request(str(url), headers={"User-Agent": "gvs-tui/1.0"})
             with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT) as r:
                 raw = r.read(MAX_FETCH_BYTES + 1)
+                ctype = (r.headers.get("Content-Type") or "").lower()
+                cenc = (r.headers.get("Content-Encoding") or "").lower()
         except urllib.error.HTTPError as e:
             return f"ERROR: fetch failed ({e.code} {e.reason}) for {url}"
         except Exception as e:  # noqa: BLE001 - surfaced to the model
             return f"ERROR: fetch failed for {url}: {e}"
+        # Decompress gzip responses (some servers compress by default).
+        if "gzip" in cenc or raw[:2] == b"\x1f\x8b":
+            try:
+                raw = gzip.decompress(raw)
+            except Exception:  # noqa: BLE001 - keep the raw bytes if decompression fails
+                pass
         truncated = len(raw) > MAX_FETCH_BYTES
         if truncated:
             raw = raw[:MAX_FETCH_BYTES]
+        # Save the page to the workspace so the raw bytes do NOT bloat the model's
+        # context. The researcher reads it with read_file when it needs the content.
+        relpath = f"research/web/{_slug_url(url)}"
+        p = safe_path(ws, relpath)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "wb") as f:
+            f.write(raw)
+        is_text = any(k in ctype for k in ("text", "html", "json", "xml", "javascript"))
         try:
-            text = raw.decode("utf-8", errors="replace")
+            preview = " ".join(raw[:1500].decode("utf-8", errors="replace").split())[:300]
         except Exception:
-            text = raw.decode("latin-1", errors="replace")
-        note = "\n[truncated: page is larger than the fetch cap]" if truncated else ""
-        return text + note
+            preview = ""
+        kind = (ctype or "unknown type") if not is_text else "text"
+        trunc_note = " (truncated at the fetch cap)" if truncated else ""
+        return (f"OK: fetched {url} ({len(raw)} bytes, {kind}{trunc_note}) -> saved to "
+                f"{relpath}. The full page is NOT in this result; read it with read_file "
+                f"when you need the content. Preview: {preview}")
     raise ToolError(f"unknown tool {name!r}")
 
 
@@ -260,8 +291,10 @@ fenced code block tagged "tool" with one JSON object, no other text:
 ```
 Available web tools:
 - {"name":"search","args":{"query":"..."}}    web search (returns titled results with URLs + snippets)
-- {"name":"fetch","args":{"url":"https://..."}}  fetch a page and read its text
-Use search to find sources, then fetch the most relevant ones to read the actual content.
-Cite sources by URL in your findings. If a search or fetch fails, try a different query or
-source rather than giving up.
+- {"name":"fetch","args":{"url":"https://..."}}  fetch a page; it is SAVED to research/web/<file>
+  and the result is only a short pointer + preview (the full page is NOT in the result).
+Workflow: use search to find sources, fetch the most relevant ones, then read_file the saved
+pages (research/web/...) to read the actual content. Fetch each URL at most once. Cite
+sources by URL in your findings. If a search or fetch fails, try a different query or source
+rather than giving up -- but do NOT re-fetch a page you already have.
 """

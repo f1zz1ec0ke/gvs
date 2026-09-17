@@ -110,6 +110,7 @@ def main():
     orig_urlopen = _urlreq.urlopen
 
     class _FakeResp:
+        headers = {"Content-Type": "text/html; charset=utf-8"}
         def __init__(self, data):
             self._d = data
         def read(self, n=-1):
@@ -121,7 +122,16 @@ def main():
     _urlreq.urlopen = lambda req, timeout=None: _FakeResp(b"hello fetched page")
     try:
         r = tools.run_tool("fetch", {"url": "https://example.com"}, ws, web=True)
-        check("fetch returns page text", "hello fetched page" in r)
+        # The result is a short pointer (the page is saved to a file, not inlined).
+        check("fetch returns a pointer (not the full page)",
+              "saved to research/web/" in r and "hello fetched page" in r)
+        # The page was actually written to the workspace (research/web/).
+        webdir = os.path.join(ws, "research", "web")
+        saved = os.listdir(webdir) if os.path.isdir(webdir) else []
+        check("fetch saved the page to the workspace", len(saved) == 1)
+        if saved:
+            with open(os.path.join(webdir, saved[0]), "rb") as f:
+                check("saved page has the content", f.read() == b"hello fetched page")
         r = tools.run_tool("fetch", {"url": "https://example.com"}, ws, web=False)
         check("fetch blocked for non-web role", r.startswith("ERROR"))
         r = tools.run_tool("fetch", {"url": "file:///etc/passwd"}, ws, web=True)
