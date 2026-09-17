@@ -83,7 +83,7 @@ def test_rest_flow():
         assert s["run"]["state"] in ("done", "stopped"), s["run"]
         assert s["current"]["ws"], "no workspace"
         assert len(s["current"]["calls"]) >= 3, "expected several model calls"
-        assert s["current"]["ledger"].get("artifact"), "no artifact"
+        assert s["current"]["ledger"].get("out_files"), "no deliverable in out/"
         assert s["current"]["tokens"]["calls"] >= 3
         # the manager posted progress into the chat
         mgr = [m for m in s["current"]["chat"] if m["role"] == "manager"]
@@ -297,7 +297,7 @@ def test_file_browser_tool_written():
         if "WORKER subagent" in sysmsg:
             state["worker_calls"] += 1
             if state["worker_calls"] == 1:
-                return ('```tool\n{"name": "write_file", "args": {"path": "result.md", '
+                return ('```tool\n{"name": "write_file", "args": {"path": "out/result.md", '
                         '"content": "# Tool Written Deliverable\\n\\nMade via write_file."}}\n```')
             return "### STATUS\nsolved\n### NEXT\nnone\n### NOTES\n- Wrote via tool."
         if "FIRST WORKER" in sysmsg:
@@ -322,13 +322,47 @@ def test_file_browser_tool_written():
             assert s["run"]["state"] == "done", s["run"]
             r = client.get("/api/files")
             names = {f["name"] for f in r.json()["files"]}
-            assert "result.md" in names, names
-            r = client.get("/api/file", params={"name": "result.md"})
+            assert "out/result.md" in names, names
+            r = client.get("/api/file", params={"name": "out/result.md"})
             assert r.status_code == 200, r.text
             assert "Tool Written Deliverable" in r.json()["content"], r.json()["content"]
     finally:
         chatmod.compat_chat = orig
     print("file browser (tool-written): OK")
+
+
+def test_preview():
+    # the deliverable preview serves out/ as static files
+    st = ServerState()
+    st.cfg.model = "gvs"
+    app = create_app(st)
+    with TestClient(app) as client:
+        # no workspace open -> 404
+        r = client.get("/preview")
+        assert r.status_code == 404, r.status_code
+        # seed a workspace with a small website deliverable
+        ws = os.path.join(server.WS_ROOT, "previewtest")
+        os.makedirs(os.path.join(ws, "out"), exist_ok=True)
+        with open(os.path.join(ws, "out", "index.html"), "w", encoding="utf-8") as f:
+            f.write("<html><head><link rel=stylesheet href=style.css></head>"
+                    "<body><h1>Hi</h1></body></html>")
+        with open(os.path.join(ws, "out", "style.css"), "w", encoding="utf-8") as f:
+            f.write("h1 { color: red; }")
+        st.current_ws = ws
+        # /preview -> index.html with the right content type
+        r = client.get("/preview")
+        assert r.status_code == 200, r.text
+        assert "text/html" in r.headers.get("content-type", ""), r.headers
+        assert "<h1>Hi</h1>" in r.text
+        # /preview/style.css
+        r = client.get("/preview/style.css")
+        assert r.status_code == 200, r.text
+        assert "text/css" in r.headers.get("content-type", ""), r.headers
+        assert "color: red" in r.text
+        # missing file -> 404
+        r = client.get("/preview/nope.js")
+        assert r.status_code == 404, r.status_code
+    print("preview: OK")
 
 
 if __name__ == "__main__":
@@ -339,4 +373,5 @@ if __name__ == "__main__":
     test_open_and_continue()
     test_file_browser()
     test_file_browser_tool_written()
+    test_preview()
     print("\nALL WEB BACKEND TESTS PASSED")

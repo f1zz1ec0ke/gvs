@@ -50,27 +50,29 @@ def _scrubbed_env():
 
 
 def run_python_tests(ws, profile, tests, timeout=SANDBOX_TIMEOUT):
-    """Default verifier for the ``code`` profile: run the artifact against
+    """Default verifier: run the deliverable (the ``out/`` directory) against
     stdin/stdout sample tests, in a sandboxed subprocess.
 
     ``tests`` is a list of dicts with ``"input"`` and ``"output"`` keys (and
-    optionally ``"testtype"`` containing "stdin"). Mirrors GVS5H's sample-test
-    execution. ``profile`` is accepted for a uniform verifier signature.
+    optionally ``"testtype"`` containing "stdin"). ``profile`` is accepted for a
+    uniform verifier signature; the deliverable is always ``out/``.
     """
-    code = _read_artifact(ws, profile.artifact_file)
+    out_dir = os.path.join(ws, "out")
+    program = _find_program(out_dir)
     stdin_tests = [t for t in (tests or [])
                    if "stdin" in str(t.get("testtype", "")).lower()]
     if not stdin_tests:
         stdin_tests = [t for t in (tests or []) if "input" in t]
-    if not code.strip() or not stdin_tests:
+    if not program or not stdin_tests:
         return {"ran": False}
 
-    # Isolated temp working dir: the generated code cannot touch the workspace
-    # or the project (relative writes land in this throwaway directory).
+    # Isolated temp working dir: copy the WHOLE out/ deliverable in (so multi-file
+    # programs with imports work) and run there, so the code cannot touch the
+    # workspace or the project.
     sandbox = tempfile.mkdtemp(prefix="gvs_sandbox_")
-    sol = os.path.join(sandbox, profile.artifact_file)
-    with open(sol, "w", encoding="utf-8", newline="\n") as f:
-        f.write(code)
+    out_copy = os.path.join(sandbox, "out")
+    shutil.copytree(out_dir, out_copy)
+    sol = os.path.join(out_copy, os.path.relpath(program, out_dir))
     env = _scrubbed_env()
 
     passed, fail = 0, None
@@ -86,7 +88,8 @@ def run_python_tests(ws, profile, tests, timeout=SANDBOX_TIMEOUT):
             exp = (t.get("output", "") or "").strip()
             try:
                 r = subprocess.run([sys.executable, sol], input=inp, capture_output=True,
-                                   text=True, timeout=timeout, cwd=sandbox, env=env)
+                                   text=True, timeout=timeout,
+                                   cwd=os.path.dirname(sol), env=env)
                 got = (r.stdout or "").strip()
                 if r.returncode != 0 and not got:
                     got = f"<runtime error: {(r.stderr or '')[:200]}>"
@@ -103,12 +106,31 @@ def run_python_tests(ws, profile, tests, timeout=SANDBOX_TIMEOUT):
     return {"ran": True, "passed": passed, "total": len(stdin_tests), "fail": fail}
 
 
-def _read_artifact(ws, name):
-    try:
-        with open(os.path.join(ws, name), encoding="utf-8") as f:
-            return f.read()
-    except FileNotFoundError:
-        return ""
+def _find_program(out_dir):
+    """Find the entry-point program in the deliverable directory.
+
+    Prefers ``main.py``, then ``solution.py``, then the single ``.py`` file, then
+    the first ``.py`` (sorted). Returns an absolute path or ``None``.
+    """
+    if not os.path.isdir(out_dir):
+        return None
+    for name in ("main.py", "solution.py"):
+        p = os.path.join(out_dir, name)
+        if os.path.isfile(p):
+            return p
+    pys = []
+    for root, _dirs, names in os.walk(out_dir):
+        for name in names:
+            if name.endswith(".py"):
+                pys.append(os.path.join(root, name))
+    if not pys:
+        return None
+    if len(pys) == 1:
+        return pys[0]
+    top = [p for p in pys if os.path.dirname(p) == out_dir]
+    if len(top) == 1:
+        return top[0]
+    return sorted(pys)[0]
 
 
 def sample_feedback(res):

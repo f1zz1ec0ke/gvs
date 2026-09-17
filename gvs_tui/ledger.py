@@ -8,7 +8,7 @@ of plain files.
     plan.md          the manager's overarching plan
     notes.md         shared notes, rewritten by workers (last writer wins)
     tasks.json       the manager's live task list
-    <artifact>       the current solution/answer/report (profile-defined)
+    out/             the deliverable -- every file the task calls for (one or many)
     transcript.jsonl one line per model call (request, response, usage)
 
 Everything here is synchronous and side-effectful on disk, so the TUI can
@@ -25,6 +25,10 @@ import hashlib
 MAX_TASKS_DEFAULT = 12
 MAX_PLAN_CHARS = 4000
 MAX_ANSWER_CHARS = 20000
+
+# The deliverable lives in this directory (one or many files, whatever the task
+# calls for). Everything else in the workspace is process, not deliverable.
+OUT_DIR = "out"
 
 
 def slug(text):
@@ -54,11 +58,88 @@ def append(ws, name, content):
         f.write(content)
 
 
-def init_workspace(ws, artifact_file, task_text):
-    """Create a fresh ledger for one task."""
+def _out_base(ws):
+    return os.path.join(ws, OUT_DIR)
+
+
+def out_files(ws):
+    """List the deliverable files under ``out/`` as ``[{name, size, mtime}]``.
+
+    ``name`` is the path relative to ``out/`` (forward slashes). Sorted by name.
+    """
+    base = _out_base(ws)
+    files = []
+    if os.path.isdir(base):
+        for root, _dirs, names in os.walk(base):
+            for name in names:
+                p = os.path.join(root, name)
+                if os.path.isfile(p):
+                    s = os.stat(p)
+                    rel = os.path.relpath(p, base).replace(os.sep, "/")
+                    files.append({"name": rel, "size": s.st_size, "mtime": s.st_mtime})
+    files.sort(key=lambda f: f["name"])
+    return files
+
+
+def out_snapshot(ws):
+    """A canonical ``{relpath: bytes}`` of everything under ``out/``.
+
+    Used to detect whether a worker changed the deliverable this turn.
+    """
+    snap = {}
+    base = _out_base(ws)
+    if os.path.isdir(base):
+        for root, _dirs, names in os.walk(base):
+            for name in names:
+                p = os.path.join(root, name)
+                if os.path.isfile(p):
+                    rel = os.path.relpath(p, base).replace(os.sep, "/")
+                    try:
+                        with open(p, "rb") as f:
+                            snap[rel] = f.read()
+                    except OSError:
+                        snap[rel] = b""
+    return snap
+
+
+def out_brief(ws, max_file_bytes=8000, max_total_bytes=40000):
+    """A compact text view of the deliverable: a file list plus (capped) contents.
+
+    Empty string if ``out/`` has no files.
+    """
+    files = out_files(ws)
+    if not files:
+        return ""
+    base = _out_base(ws)
+    header = "\n".join(f"- {f['name']}  ({f['size']} bytes)" for f in files)
+    parts = [header]
+    total = 0
+    for f in files:
+        try:
+            with open(os.path.join(base, f["name"]), "rb") as fh:
+                raw = fh.read(max_file_bytes + 1)
+        except OSError:
+            continue
+        truncated = len(raw) > max_file_bytes
+        if truncated:
+            raw = raw[:max_file_bytes]
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = f"<binary, {len(raw)} bytes>"
+        total += len(text)
+        parts.append(f"--- {f['name']} ---\n{text}" + ("\n[truncated]" if truncated else ""))
+        if total > max_total_bytes:
+            parts.append("[... further files omitted for brevity ...]")
+            break
+    return "\n\n".join(parts)
+
+
+def init_workspace(ws, task_text):
+    """Create a fresh ledger for one task (deliverable goes in ``out/``)."""
     os.makedirs(ws, exist_ok=True)
-    for name in ("task.md", "notes.md", "transcript.jsonl", "plan.md",
-                 artifact_file, "tasks.json"):
+    os.makedirs(_out_base(ws), exist_ok=True)
+    for name in ("task.md", "notes.md", "transcript.jsonl", "plan.md", "tasks.json"):
         write(ws, name, "")
     write(ws, "task.md", task_text)
 
@@ -143,14 +224,9 @@ def parse_tasks(text, max_tasks=MAX_TASKS_DEFAULT):
     return out[:max_tasks]
 
 
-def has_artifact(ws, profile):
-    """True if the ledger already holds a usable final artifact."""
-    if profile.kind == "code":
-        return bool(read(ws, profile.artifact_file).strip())
-    text = read(ws, profile.artifact_file)
-    if profile.answer_marker:
-        return bool(re.search(profile.answer_marker, text, re.I))
-    return bool(text.strip())
+def has_artifact(ws):
+    """True if the deliverable directory ``out/`` holds at least one file."""
+    return len(out_files(ws)) > 0
 
 
 def load_tasks(ws):
@@ -213,8 +289,6 @@ def recent_chat(ws, n=10):
 
 # --- saved runs -------------------------------------------------------------
 
-_ARTIFACT_FILES = ("solution.py", "answer.md", "report.md", "result.md")
-
 
 def run_summary(ws):
     task = read(ws, "task.md").strip()
@@ -222,7 +296,7 @@ def run_summary(ws):
     metas = [r for r in read_transcript(ws) if r.get("_meta")]
     m0 = metas[0] if metas else {}
     mlast = metas[-1] if metas else {}
-    has_artifact = any(read(ws, f).strip() for f in _ARTIFACT_FILES)
+    has_art = has_artifact(ws)
     try:
         updated = os.path.getmtime(ws)
     except OSError:
@@ -236,7 +310,8 @@ def run_summary(ws):
         "profile": m0.get("profile"),
         "continued": bool(mlast.get("continued", False)),
         "updated": updated,
-        "has_artifact": has_artifact,
+        "has_artifact": has_art,
+        "n_artifact_files": len(out_files(ws)),
     }
 
 

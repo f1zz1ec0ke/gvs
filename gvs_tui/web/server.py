@@ -13,9 +13,10 @@ import time
 import asyncio
 import dataclasses
 import threading
+import mimetypes
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -94,9 +95,14 @@ def parse_tests(raw):
     return tests
 
 
-def safe_profile(name):
-    """get_profile that falls back to 'general' instead of SystemExit."""
-    return get_profile(name) if name in PROFILES else get_profile("general")
+def safe_profile(name=None):
+    """Always the single general profile.
+
+    The web GUI uses one general mode: the deliverable is whatever the task calls
+    for, written to ``out/``. Other profiles still exist (see profiles.py) for
+    programmatic use, but the GUI does not expose a choice.
+    """
+    return get_profile("general")
 
 
 # --- live event broadcaster -------------------------------------------------
@@ -199,9 +205,10 @@ def manager_messages(ws, text, profile):
         f"subagents, all expert at {domain}, coordinating through a shared "
         "filesystem ledger. The user is talking to you directly. Be concise and "
         "practical: acknowledge the task, explain your plan, answer questions, "
-        "and give clear direction. You do NOT write the final artifact yourself -- "
-        "worker subagents do. Keep replies to a few sentences unless the user asks "
-        "for detail.\n"
+        "and give clear direction. You do NOT write the deliverable yourself -- "
+        "worker subagents do; they write every deliverable file under the 'out/' "
+        "directory (one file or many, whatever the task calls for). Keep replies "
+        "to a few sentences unless the user asks for detail.\n"
         "You can START THE RUN yourself -- do NOT wait for the user to click Run. "
         "As you chat, gather what you need: if something is unclear, ask the user a "
         "concise question. Once you have enough to proceed (or the user confirms), "
@@ -323,15 +330,14 @@ class RunManager:
         self.broadcaster.broadcast({"type": "ledger", **self.ledger_payload()})
 
     def ledger_payload(self):
-        if not self.ws or not self.profile:
+        if not self.ws:
             return {}
         return {
             "plan": ledger.read(self.ws, "plan.md"),
             "notes": ledger.read(self.ws, "notes.md"),
             "tasks": ledger.load_tasks(self.ws),
-            "artifact": ledger.read(self.ws, self.profile.artifact_file),
-            "artifact_file": self.profile.artifact_file,
-            "kind": self.profile.kind,
+            "out_files": ledger.out_files(self.ws),
+            "artifact_dir": ledger.OUT_DIR,
         }
 
     def _manage_message(self, p):
@@ -411,11 +417,11 @@ def ensure_workspace(st, task):
         profile = safe_profile(st.cfg.profile)
         st.current_ws = os.path.join(WS_ROOT, ledger.slug(task))
         st.current_profile = profile
-        ledger.init_workspace(st.current_ws, profile.artifact_file, task)
+        ledger.init_workspace(st.current_ws, task)
         st.broadcaster.broadcast({"type": "init", "ws": st.current_ws,
                                   "model": f"compat:{st.cfg.model}",
                                   "profile": profile.name,
-                                  "artifact_file": profile.artifact_file,
+                                  "artifact_dir": ledger.OUT_DIR,
                                   "fresh": True})
     return st.current_ws
 
@@ -455,7 +461,7 @@ def start_run(st, task, fresh=True, ws=None):
             profile, temps={k: st.cfg.temperature for k in profile.temps})
     st.current_profile = profile
     tests = parse_tests(st.cfg.tests)
-    verifier = run_python_tests if (profile.kind == "code" and tests) else None
+    verifier = run_python_tests if tests else None
     if not st.cfg.model:
         return False, "no model configured -- set it in Settings"
     st.runs.start(task, profile, f"compat:{st.cfg.model}",
@@ -502,15 +508,13 @@ def state_payload(st):
                 "provider": r.get("provider"), "t": r.get("t"),
             })
         chat = ledger.read_chat(ws)
-        if profile:
-            ledger_data = {
-                "plan": ledger.read(ws, "plan.md"),
-                "notes": ledger.read(ws, "notes.md"),
-                "tasks": ledger.load_tasks(ws),
-                "artifact": ledger.read(ws, profile.artifact_file),
-                "artifact_file": profile.artifact_file,
-                "kind": profile.kind,
-            }
+        ledger_data = {
+            "plan": ledger.read(ws, "plan.md"),
+            "notes": ledger.read(ws, "notes.md"),
+            "tasks": ledger.load_tasks(ws),
+            "out_files": ledger.out_files(ws),
+            "artifact_dir": ledger.OUT_DIR,
+        }
     tokens = (ledger.usage_totals(ws) if ws
               else {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0})
     return {
@@ -643,6 +647,55 @@ def create_app(state: ServerState | None = None) -> FastAPI:
         return {"name": name, "content": content, "kind": kind,
                 "truncated": truncated, "size": len(raw)}
 
+    # ---- deliverable preview (serve out/ as static files) ----
+    def _serve_preview(rel: str):
+        if not st.current_ws or not os.path.isdir(st.current_ws):
+            raise HTTPException(404, "no workspace open")
+        base = os.path.join(st.current_ws, ledger.OUT_DIR)
+        if not os.path.isdir(base):
+            raise HTTPException(404, "no deliverable yet")
+        files = ledger.out_files(st.current_ws)
+        rel = (rel or "").strip("/")
+        if not rel:
+            # default: index.html, else the first .html, else a simple listing
+            for cand in ("index.html", "index.htm", "main.html"):
+                if os.path.isfile(os.path.join(base, cand)):
+                    rel = cand
+                    break
+            else:
+                htmls = [f["name"] for f in files
+                         if f["name"].lower().endswith((".html", ".htm"))]
+                if htmls:
+                    rel = htmls[0]
+                else:
+                    items = "".join(
+                        f'<li><a href="{f["name"]}">{f["name"]}</a> ({f["size"]} bytes)</li>'
+                        for f in files) or "<li>(empty)</li>"
+                    return Response(
+                        f"<html><body><h1>out/</h1><ul>{items}</ul></body></html>",
+                        media_type="text/html")
+        try:
+            p = tools.safe_path(base, rel)
+        except tools.ToolError as e:
+            raise HTTPException(400, f"invalid path: {e}")
+        if not os.path.isfile(p):
+            raise HTTPException(404, "file not found")
+        try:
+            with open(p, "rb") as f:
+                raw = f.read()
+        except OSError as e:
+            raise HTTPException(500, f"read error: {e}")
+        media_type = mimetypes.guess_type(p)[0] or "application/octet-stream"
+        return Response(raw, media_type=media_type)
+
+    @app.get("/preview")
+    def _preview_index():
+        return _serve_preview("")
+
+    @app.get("/preview/{path:path}")
+    def _preview_file(path: str):
+        return _serve_preview(path)
+
     # ---- chat ----
     @app.post("/api/chat")
     def _chat(body: ChatIn):
@@ -720,7 +773,7 @@ def create_app(state: ServerState | None = None) -> FastAPI:
         task = st.current_task or ledger.read(st.current_ws, "task.md")
         profile = st.current_profile or safe_profile(st.cfg.profile)
         tests = parse_tests(st.cfg.tests)
-        verifier = run_python_tests if (profile.kind == "code" and tests) else None
+        verifier = run_python_tests if tests else None
         if not st.cfg.model:
             raise HTTPException(400, "no model configured -- set it in Settings")
         st.runs.start(task, profile, f"compat:{st.cfg.model}",

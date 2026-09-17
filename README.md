@@ -16,7 +16,7 @@ each other directly; they coordinate only through a **shared filesystem ledger**
 | `plan.md` | the manager's overarching plan |
 | `notes.md` | shared notes, **rewritten** by each worker (last writer wins) |
 | `tasks.json` | the manager's live task list |
-| `solution.py` / `answer.md` / `report.md` | the current artifact (profile-defined) |
+| `out/` | **the deliverable** — every file the task calls for (one or many) |
 | `transcript.jsonl` | one line per model call (request, response, usage) |
 
 The loop:
@@ -25,12 +25,13 @@ The loop:
 2. **ideation** — a first worker proposes several *distinct* approaches (prose only).
 3. **primary_manage** — the manager curates the task list and picks the **one** next task,
    or declares `done`.
-4. **worker** — a fresh worker does that one task, rewrites `notes.md`, updates the
-   artifact, and proposes next steps.
-5. **(verifier)** — optional ground-truth check of the artifact (e.g. run sample tests),
-   fed back to the manager as a pass/fail verdict.
-6. Repeat 3–5 until the manager says `done` (and an artifact exists), the iteration cap is
-   hit, or no progress is made. A **finalize** worker makes one last attempt if needed.
+4. **worker** — a fresh worker does that one task, rewrites `notes.md`, writes its
+   deliverable file(s) under `out/`, and proposes next steps.
+5. **(verifier)** — optional ground-truth check of the deliverable (e.g. run sample tests
+   against `out/`), fed back to the manager as a pass/fail verdict.
+6. Repeat 3–5 until the manager says `done` (and a deliverable exists in `out/`), the
+   iteration cap is hit, or no progress is made. A **finalize** worker makes one last attempt
+   if needed.
 
 The key insight from the paper: decomposition + persistent context (the ledger) lets fresh
 instances of a *single* model approach frontier coding accuracy — no training, no big model.
@@ -40,13 +41,17 @@ instances of a *single* model approach frontier coding accuracy — no training,
 GVS5H hard-coded the loop around LiveCodeBench with `code`/`math` specs. This project
 generalizes it:
 
-- **Pluggable domain profiles** (`gvs_tui/profiles.py`) — a profile supplies the domain
-  name, the worker's solver prompt, the artifact file + kind, and an answer marker.
-  Built-ins: `code`, `math`, `research`, `general`. Add your own with one `Profile(...)`.
-- **Optional verifier hooks** (`gvs_tui/verifier.py`) — any `verifier(ws, profile, tests)`
-  callable that returns a pass/fail dict. The `code` profile ships a run-the-tests verifier
-  that executes the generated code in a **sandboxed subprocess** (isolated temp dir, per-test
-  timeout + total cap, scrubbed environment with no API keys, best-effort network block).
+- **One general mode** — the deliverable is whatever the *task* calls for (a program, a
+  website, a document, a dataset — one file or many), written under `out/`. There is no
+  profile to pick: the manager reads the task and tells the workers what to build. (The
+  `Profile` dataclass and the old `code`/`math`/`research`/`general` profiles still exist in
+  `gvs_tui/profiles.py` for programmatic use, but the GUI uses a single general mode.)
+- **Task-driven verifier hooks** (`gvs_tui/verifier.py`) — any `verifier(ws, profile, tests)`
+  callable that returns a pass/fail dict. If you supply sample tests, the built-in verifier
+  runs the deliverable in `out/` (it finds the entry point and copies `out/` into the
+  sandbox) in a **sandboxed subprocess** (isolated temp dir, per-test timeout + total cap,
+  scrubbed environment with no API keys, best-effort network block). No tests → no automated
+  check (the manager re-reads the deliverable and you approve it).
 - **Dedicated researcher role** (`gvs_tui/loop.py`) — when the manager marks a task with a
   `[research]` prefix, a fresh **researcher** (instead of a worker) is dispatched. It has the
   file tools **plus web tools** (`search` + `fetch`) and writes its findings to `research.md`
@@ -78,10 +83,11 @@ confined to that directory (no shell, no network, no code execution), driven by 
 model-agnostic **JSON-in-text tool protocol** (a `tool`-tagged fenced JSON block), so it
 works on any OpenAI-compatible endpoint.
 
-- A **worker** uses the tools to *actually create* its deliverable (written to the profile's
-  artifact file, e.g. `result.md`) plus any supporting files (research notes, drafts,
-  subdirectories). It no longer has to cram everything into one response, and it can't
-  "describe" a file it didn't write — the file is real and verifiable.
+- A **worker** uses the tools to *actually create* its deliverable — every deliverable file
+  goes under `out/` (one file or a whole tree, e.g. a website's `index.html` + `css` + `js`) —
+  plus any supporting process files (research notes, drafts, subdirectories). It no longer
+  has to cram everything into one response, and it can't "describe" a file it didn't write —
+  the files are real and verifiable.
 - The **manager** gets **read-only** tools (`ls`, `read_file`) plus a live file listing, so it
   can inspect what workers actually produced before deciding the next step.
 - The **researcher** gets the file tools **plus web tools** (`search`, `fetch`) — the only role
@@ -152,7 +158,7 @@ Then open the printed URL. The workflow:
    - the **Timeline** tab — every model call as it lands; click any call to **zoom in** and read
      the full prompt, the raw response, the parsed `###` sections, and any tool steps;
     - the **Files** tab — browse every file in the workspace (including what workers wrote);
-   - the **Artifact** tab — the current artifact (syntax-highlighted for code), with an
+   - the **Artifact** tab — the deliverable: the `out/` file tree (click any file to view it, syntax-highlighted by type), a **Preview** button that serves `out/` in a new tab (great for websites), and an
      **Approve** button once the run finishes.
 4. **Steer** anytime — send the manager a message (it reads the ledger + your chat), or
    **Pause** / **Resume** / **Stop** the run.
@@ -201,7 +207,7 @@ gvs_tui/
   chat.py       provider dispatch (ollama/openai/groq/dashscope/anthropic/openrouter/claude
                 + config-driven `compat:` OpenAI-compatible endpoint + mock)
   ledger.py     workspace files, transcript, section/task parsing, manager chat, saved runs
-  profiles.py   pluggable domain profiles
+  profiles.py   the Profile dataclass + built-ins (the GUI uses one general mode)
   verifier.py   optional ground-truth verifier hooks (sandboxed subprocess for code)
   tools.py      sandboxed file tools (ls/read/write/append) + web tools (search/fetch) + protocol
   search.py     pluggable web search providers (brave / http / command)

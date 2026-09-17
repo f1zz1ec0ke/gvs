@@ -94,7 +94,7 @@
         <select id="cfg-models" class="select" hidden></select>
         <div class="field-row">
           <label class="field">
-            <span>Temperature <em>blank = profile default</em></span>
+            <span>Temperature <em>blank = default</em></span>
             <input id="cfg-temperature" type="number" step="0.1" min="0" max="2" placeholder="0.2">
           </label>
           <label class="field">
@@ -113,16 +113,7 @@
           </label>
         </div>
         <label class="field">
-          <span>Profile</span>
-          <select id="cfg-profile" class="select">
-            <option value="general">general — any task</option>
-            <option value="code">code — runnable program</option>
-            <option value="math">math — exact answer</option>
-            <option value="research">research — written report</option>
-          </select>
-        </label>
-        <label class="field">
-          <span>Sample tests <em>code profile, one “input =&gt; output” per line</em></span>
+          <span>Sample tests <em>optional, for code deliverables — one “input =&gt; output” per line</em></span>
           <textarea id="cfg-tests" rows="3" placeholder="hello => hello&#10;3 4 => 7" spellcheck="false"></textarea>
         </label>
         <div class="search-config">

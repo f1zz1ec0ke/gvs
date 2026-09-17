@@ -102,7 +102,7 @@ def main(argv=None):
     task, model, profile_name, tests_raw = _resolve(args)
     profile = get_profile(profile_name)
     tests = _parse_tests(tests_raw)
-    verifier = run_python_tests if (profile.kind == "code" and tests) else None
+    verifier = run_python_tests if tests else None
 
     if args.headless:
         status = run_loop(
@@ -114,13 +114,12 @@ def main(argv=None):
         )
         print(f"\nworkspace : {status['ws']}")
         print(f"iters     : {status['iters']}   calls: {status['n_calls']}")
-        print(f"artifact  : {'yes' if status['has_artifact'] else 'NO'} "
-              f"({status['artifact_file']})")
-        art_path = os.path.join(status["ws"], status["artifact_file"])
+        print(f"deliverable: {'yes' if status['has_artifact'] else 'NO'} "
+              f"({status['artifact_dir']}/, {status['n_artifact_files']} files)")
         if status["has_artifact"]:
-            print("\n--- artifact ---")
-            with open(art_path, encoding="utf-8") as f:
-                print(f.read())
+            print("\n--- deliverable (out/) ---")
+            from . import ledger
+            print(ledger.out_brief(status["ws"]))
         return
 
     from .app import GvsApp

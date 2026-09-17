@@ -131,9 +131,8 @@ class GvsApp(App):
             ledger.read(self.ws, "plan.md") or "(no plan yet)")
         self.query_one("#notes-view").update(
             ledger.read(self.ws, "notes.md") or "(no notes yet)")
-        art = ledger.read(self.ws, self.profile_obj.artifact_file) \
-            if self.profile_obj else ""
-        self.query_one("#artifact-view").update(art or "(no artifact yet)")
+        art = ledger.out_brief(self.ws) if self.ws else ""
+        self.query_one("#artifact-view").update(art or "(no deliverable yet)")
         table = self.query_one("#tasks", DataTable)
         table.clear()
         for t in ledger.load_tasks(self.ws):
@@ -160,7 +159,7 @@ class GvsApp(App):
         self.control = Control()
 
         verifier, tests = None, None
-        if profile.kind == "code" and tests_raw:
+        if tests_raw:
             tests = _parse_tests(tests_raw)
             if tests:
                 verifier = run_python_tests
@@ -227,7 +226,8 @@ class GvsApp(App):
         self._set_run_state("done" if not status.get("stopped") else "stopped")
         self._transcript(
             f"\n== done: iters={status['iters']} calls={status['n_calls']} "
-            f"artifact={'yes' if status['has_artifact'] else 'NO'} ==")
+            f"deliverable={'yes' if status['has_artifact'] else 'NO'} "
+            f"({status.get('n_artifact_files', 0)} files) ==")
         self._set_status(self._status_text() + "  ·  finished")
         self._refresh_ledger()
 

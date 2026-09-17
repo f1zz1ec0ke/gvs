@@ -326,35 +326,74 @@ export function renderCallDetail(call, index, els, onBack) {
 
 /* ---------------- artifact ---------------- */
 
-export function renderArtifact(current, run, els, onApprove) {
+function hasHtml(files) {
+  return (files || []).some((f) => /\.html?$/i.test(f.name));
+}
+
+function artifactActionsHtml(finished, files, onApprove, onPreview) {
+  if (!finished || !files.length) return "";
+  return `<div class="artifact-actions">
+    <button class="btn primary" id="approve-btn">✓ Approve deliverable</button>
+    ${hasHtml(files) ? '<button class="btn" id="preview-btn">▶ Preview</button>' : ""}
+    <span class="artifact-hint">Not happy? Tell the manager what to change in the chat, then Run again.</span>
+  </div>`;
+}
+
+function wireArtifactActions(a, onApprove, onPreview) {
+  const ab = a.querySelector("#approve-btn");
+  if (ab) ab.addEventListener("click", onApprove);
+  const pb = a.querySelector("#preview-btn");
+  if (pb) pb.addEventListener("click", onPreview);
+}
+
+export function renderArtifact(current, run, els, onApprove, onOpenFile, onPreview) {
   const a = els.artifact;
   const cur = current || {};
   const led = cur.ledger || {};
-  const art = led.artifact || "";
-  const kind = led.kind || "code";
+  const files = led.out_files || [];
   const state = (run && run.state) || "idle";
   const finished = state === "done" || state === "stopped";
 
-  let html = "";
-  if (finished && art) {
-    html += `<div class="artifact-actions">
-      <button class="btn primary" id="approve-btn">✓ Approve artifact</button>
-      <span class="artifact-hint">Not happy? Tell the manager what to change in the chat, then Run again.</span>
-    </div>`;
-  }
-  if (!art) {
-    html += '<div class="empty" style="text-align:center;padding:44px 0">No artifact yet — it will appear here as workers produce it.</div>';
+  let html = artifactActionsHtml(finished, files, onApprove, onPreview);
+  if (!files.length) {
+    html += '<div class="empty" style="text-align:center;padding:44px 0">No deliverable yet — files the workers write to <code>out/</code> will appear here.</div>';
     a.innerHTML = html;
+    wireArtifactActions(a, onApprove, onPreview);
     return;
   }
-  if (kind === "code") {
-    html += `<pre class="code" id="artifact-code"><code>${highlightPy(art)}</code></pre>`;
-  } else {
-    html += `<div class="md" style="max-height:70vh;overflow:auto">${md(art)}</div>`;
-  }
+  const rows = files.map((f) => `
+    <div class="file-row" data-name="out/${esc(f.name)}" title="click to open">
+      <span class="file-name">${esc(f.name)}</span>
+      <span class="file-size">${fmtSize(f.size)}</span>
+    </div>`).join("");
+  html += `<div class="files-head">Deliverable — out/ <span class="files-count">${files.length}</span></div>
+    <div class="file-list">${rows}</div>`;
   a.innerHTML = html;
-  const ab = a.querySelector("#approve-btn");
-  if (ab) ab.addEventListener("click", onApprove);
+  a.querySelectorAll(".file-row").forEach((el) =>
+    el.addEventListener("click", () => onOpenFile(el.dataset.name)));
+  wireArtifactActions(a, onApprove, onPreview);
+}
+
+export function renderArtifactFileView(file, els, onBack) {
+  const box = els.artifact;
+  const { name, content, kind, truncated } = file;
+  let body;
+  if (kind === "code") {
+    body = `<pre class="code" style="max-height:72vh;overflow:auto"><code>${highlightPy(content)}</code></pre>`;
+  } else if (kind === "md") {
+    body = `<div class="md" style="max-height:72vh;overflow:auto">${md(content)}</div>`;
+  } else {
+    body = `<pre class="code plain" style="max-height:72vh;overflow:auto;white-space:pre-wrap">${esc(content)}</pre>`;
+  }
+  box.innerHTML = `
+    <div class="file-view-head">
+      <button class="btn" id="artifact-file-back">← All deliverable files</button>
+      <span class="file-view-name">${esc(name)}</span>
+      ${truncated ? '<span class="file-trunc">truncated</span>' : ""}
+    </div>
+    ${body}`;
+  const back = box.querySelector("#artifact-file-back");
+  if (back) back.addEventListener("click", onBack);
 }
 
 /* ---------------- workspace files ---------------- */

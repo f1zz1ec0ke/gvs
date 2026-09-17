@@ -171,15 +171,23 @@ console.log("render.js — call detail (tool call)");
 console.log("render.js — artifact");
 {
   const e = els();
-  const current = { ledger: { artifact: "print(1)", kind: "code", artifact_file: "solution.py" } };
-  R.renderArtifact(current, { state: "done" }, e, () => {});
+  const current = { ledger: { out_files: [{ name: "solution.py", size: 8, mtime: 0 }], artifact_dir: "out" } };
+  R.renderArtifact(current, { state: "done" }, e, () => {}, () => {}, () => {});
   const h = e.artifact.innerHTML;
   check("artifact approve button", h.includes("approve-btn"));
-  check("artifact highlighted code", h.includes("tok-num") || h.includes("print"));
-  // no artifact
+  check("artifact file row", h.includes("solution.py"));
+  // single-file view (rendered by extension)
+  R.renderArtifactFileView({ name: "out/solution.py", content: "print(1)", kind: "code", truncated: false }, e, () => {});
+  check("artifact file view code", e.artifact.innerHTML.includes("print"));
+  // website deliverable shows a preview button
+  const ew = els();
+  R.renderArtifact({ ledger: { out_files: [{ name: "index.html", size: 8, mtime: 0 }] } },
+    { state: "done" }, ew, () => {}, () => {}, () => {});
+  check("artifact preview button", ew.artifact.innerHTML.includes("preview-btn"));
+  // no deliverable
   const e2 = els();
-  R.renderArtifact({ ledger: { artifact: "", kind: "code" } }, { state: "running" }, e2, () => {});
-  check("artifact empty message", e2.artifact.innerHTML.includes("No artifact yet"));
+  R.renderArtifact({ ledger: { out_files: [] } }, { state: "running" }, e2, () => {}, () => {}, () => {});
+  check("artifact empty message", e2.artifact.innerHTML.includes("No deliverable yet"));
 }
 
 console.log("render.js — runs list");

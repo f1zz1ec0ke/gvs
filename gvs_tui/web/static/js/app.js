@@ -17,7 +17,8 @@ const S = {
   current: null,
   runs: [],
   tab: "overview",
-  detail: null,   // index of the call being inspected in the timeline tab
+  detail: null,      // index of the call being inspected in the timeline tab
+  artifactFile: null, // deliverable file (out/...) currently open in the artifact tab
   log: [],
 };
 
@@ -98,13 +99,14 @@ function applyState(ev) {
   S.current = ev.current;
   S.runs = ev.runs;
   S.detail = null;
+  S.artifactFile = null;
   els.chatModel.textContent = ev.config?.model
     ? `${ev.config.model} · ${ev.config.base_url}`
     : "no model configured";
   R.renderChatFull(ev.current?.chat, els.chatLog);
   R.renderStatus(S.run, S.current, els);
   R.renderOverview(S.current, S.run, els, S.log);
-  R.renderArtifact(S.current, S.run, els, approve);
+  renderArtifactPanel();
   if (S.tab === "timeline") {
     R.renderTimeline(S.current?.calls, els, openDetail);
     if (pendingCall != null && S.current?.calls && S.current.calls.length > pendingCall) {
@@ -120,8 +122,8 @@ function onInit(ev) {
     S.current.ws = ev.ws;
     if (ev.fresh) {
       S.current.calls = [];
-      S.current.ledger = { plan: "", notes: "", tasks: [], artifact: "",
-                           artifact_file: ev.artifact_file, kind: "" };
+      S.current.ledger = { plan: "", notes: "", tasks: [], out_files: [],
+                           artifact_dir: ev.artifact_dir || "out" };
       S.current.tokens = { calls: 0, prompt_tokens: 0, completion_tokens: 0 };
     }
   }
@@ -149,7 +151,7 @@ function onLedger(ev) {
   if (!S.current) return;
   S.current.ledger = { ...S.current.ledger, ...ev };
   R.renderOverview(S.current, S.run, els, S.log);
-  R.renderArtifact(S.current, S.run, els, approve);
+  renderArtifactPanel();
 }
 
 function onVerify(ev) {
@@ -228,7 +230,7 @@ function setTab(tab) {
     S.detail = null;
     R.renderTimeline(S.current?.calls, els, openDetail);
   }
-  if (tab === "artifact") R.renderArtifact(S.current, S.run, els, approve);
+  if (tab === "artifact") renderArtifactPanel();
   if (tab === "files") loadFiles();
 }
 
@@ -252,6 +254,32 @@ async function openFile(name) {
   } catch (e) {
     toast(e.message);
   }
+}
+
+/* ---------------- deliverable (out/) ---------------- */
+
+function renderArtifactPanel() {
+  if (S.artifactFile) {
+    openArtifactFile(S.artifactFile);
+  } else {
+    R.renderArtifact(S.current, S.run, els, approve, openArtifactFile, previewDeliverable);
+  }
+}
+async function openArtifactFile(name) {
+  try {
+    const r = await api("/api/file?name=" + encodeURIComponent(name));
+    S.artifactFile = name;
+    R.renderArtifactFileView(r, els, backToTree);
+  } catch (e) {
+    toast(e.message);
+  }
+}
+function backToTree() {
+  S.artifactFile = null;
+  R.renderArtifact(S.current, S.run, els, approve, openArtifactFile, previewDeliverable);
+}
+function previewDeliverable() {
+  window.open("/preview", "_blank");
 }
 
 function openDetail(i) {
@@ -323,7 +351,6 @@ function openSettings() {
   $("#cfg-max_tokens").value = c.max_tokens ?? "";
   $("#cfg-timeout").value = c.timeout ?? "";
   $("#cfg-max_iters").value = c.max_iters ?? "";
-  $("#cfg-profile").value = c.profile || "general";
   $("#cfg-tests").value = c.tests || "";
   $("#cfg-search_provider").value = c.search_provider || "";
   $("#cfg-search_api_key").value = c.search_api_key || "";
@@ -363,7 +390,7 @@ function readCfgForm() {
     max_tokens: Number($("#cfg-max_tokens").value || 131072),
     timeout: Number($("#cfg-timeout").value || 900),
     max_iters: Number($("#cfg-max_iters").value || 10),
-    profile: $("#cfg-profile").value,
+    profile: "general",
     tests: $("#cfg-tests").value,
     search_provider: $("#cfg-search_provider").value,
     search_api_key: $("#cfg-search_api_key").value,

@@ -96,16 +96,15 @@ def _ideation_prompt(profile):
 
 
 def _manage_prompt(profile):
-    label = "SOLUTION" if profile.kind == "code" else "ANSWER"
     return (
         "You are the PRIMARY orchestrator and manager. You OWN the task list and decide "
-        "when the task is done. Review the current progress and the latest worker's "
-        "result, then:\n"
+        "when the task is done. The deliverable is the set of files under 'out/' (workers "
+        "write it there). Review the current progress and the latest worker's result, then:\n"
         "- The LATEST WORKER RESULT may include a SAMPLE TESTS verdict from actually "
-        "checking the artifact. Treat it as ground truth: only set STATUS 'done' if the "
-        "artifact PASSED; if it FAILED, you MUST set STATUS 'continue' and choose a task "
+        "checking the deliverable. Treat it as ground truth: only set STATUS 'done' if the "
+        "deliverable PASSED; if it FAILED, you MUST set STATUS 'continue' and choose a task "
         "that fixes the failing case or switches to a different approach.\n"
-        "- If the current " + label.lower() + " is complete and correct, set STATUS to 'done'.\n"
+        "- If the current deliverable is complete and correct, set STATUS to 'done'.\n"
         "- Otherwise CURATE the task list: merge duplicates, drop finished or irrelevant "
         "items, mark completed ones [done], and fold in ONLY genuinely new sub-tasks from "
         "the proposals. Then choose the single most valuable next task.\n"
@@ -136,17 +135,11 @@ def _worker_prompt(profile, goal):
         "markdown headings (#, ##), bold-only lines, or ALLCAPS: lines anywhere inside this "
         "section -- the reply is split on those, so they would truncate your notes.>\n"
     )
-    if profile.kind == "code":
-        fence = profile.code_fence or "python"
-        deliverable = (f"Write the FULL updated self-contained program to "
-                       f"'{profile.artifact_file}' using write_file.")
-        fallback = (f"If you cannot use the file tools, put the full program in a ### CODE "
-                    f"section instead (a ```{fence} fence).")
-    else:
-        deliverable = (f"Write the COMPLETE deliverable to '{profile.artifact_file}' using "
-                       f"write_file -- this file IS the artifact.")
-        fallback = ("If you cannot use the file tools, put the full deliverable in an "
-                    "### ANSWER section instead.")
+    deliverable = ("Write EVERY deliverable file under the 'out/' directory using write_file "
+                   "(create the directory; everything under 'out/' is the deliverable). "
+                   "A task may need one file or many (e.g. a website is index.html + css + js).")
+    fallback = ("If you cannot use the file tools, put the full deliverable in an "
+                "### ANSWER section instead.")
     final_fmt = (
         "### STATUS\n<solved|continue>\n"
         "### NEXT\n<bullet list of remaining steps, or 'none'>\n"
@@ -231,9 +224,10 @@ def run_loop(task_text, profile, model,
     if ws is None:
         ws = os.path.join(ws_root, ledger.slug(task_text))
     if fresh:
-        ledger.init_workspace(ws, profile.artifact_file, task_text)
+        ledger.init_workspace(ws, task_text)
     else:
         os.makedirs(ws, exist_ok=True)
+        os.makedirs(os.path.join(ws, ledger.OUT_DIR), exist_ok=True)
         if not ledger.read(ws, "task.md").strip():
             ledger.write(ws, "task.md", task_text)
     ledger.record(ws, {"_meta": True, "t": ledger.now(), "model": model,
@@ -241,7 +235,7 @@ def run_loop(task_text, profile, model,
                        "max_iters": max_iters, "task": task_text,
                        "continued": not fresh})
     events("init", {"ws": ws, "model": model, "profile": profile.name,
-                    "artifact_file": profile.artifact_file, "fresh": fresh})
+                    "artifact_dir": ledger.OUT_DIR, "fresh": fresh})
 
     # meta of the most recent model call, shared with the role functions so a
     # length-truncated worker can be summarized (as in GVS5H).
@@ -382,7 +376,7 @@ def run_loop(task_text, profile, model,
             ledger.save_tasks(ws, tasks)
 
         if not stopped:
-            if status == "done" and ledger.has_artifact(ws, profile):
+            if status == "done" and ledger.has_artifact(ws):
                 say("    [finalize] skipped (manager marked done)")
             else:
                 _worker(task_text, profile, ws, {"id": 0, "desc": "finalize"}, chat, say,
@@ -403,8 +397,9 @@ def run_loop(task_text, profile, model,
         "finish_reason": recs[-1].get("finish_reason") if recs else None,
         "truncated_calls": sum(1 for r in recs if r.get("finish_reason") == "length"),
         "infra_fail": any(r.get("infra_exhausted") for r in recs),
-        "has_artifact": ledger.has_artifact(ws, profile),
-        "artifact_file": profile.artifact_file,
+        "has_artifact": ledger.has_artifact(ws),
+        "artifact_dir": ledger.OUT_DIR,
+        "n_artifact_files": len(ledger.out_files(ws)),
     })
     events("done", status_out)
     return status_out
@@ -452,14 +447,13 @@ def _ideation_worker(task_text, profile, ws, chat, say):
 
 def _primary_manage(task_text, profile, ws, tasks, proposals, last_summary, chat, say,
                     max_tasks, chat_tools=None):
-    cur = ledger.read(ws, profile.artifact_file).strip()
+    cur = ledger.out_brief(ws)
     task_lines = "\n".join(
         f"- [{'done' if t['status'] == 'done' else 'todo'}] {t['desc']}" for t in tasks
     ) or "(none)"
     prop_lines = "\n".join(f"- {p}" for p in proposals) or "(none)"
-    label = "SOLUTION" if profile.kind == "code" else "ANSWER"
     user_msg = (
-        f"TASK:\n{task_text}\n\nCURRENT {label} ({profile.artifact_file}):\n"
+        f"TASK:\n{task_text}\n\nCURRENT DELIVERABLE (files under 'out/'):\n"
         f"{cur or '(none yet)'}\n\n"
         f"NOTES:\n{ledger.read(ws, 'notes.md')}\n\n"
         f"WORKSPACE FILES:\n{tools.file_listing(ws)}\n\n"
@@ -511,19 +505,19 @@ def _summarize_cutoff(ws, profile, reply, task_desc, chat):
 
 
 def _worker(task_text, profile, ws, task, chat, say, last_meta, finalize=False, chat_tools=None):
-    cur = ledger.read(ws, profile.artifact_file)
+    cur = ledger.out_snapshot(ws)
     before_notes = ledger.read(ws, "notes.md")
-    goal = ("Produce the DEFINITIVE final artifact now, using all notes and current work."
+    goal = ("Produce the DEFINITIVE final deliverable now, using all notes and current work."
             if finalize else f"Complete this task: {task['desc']}")
     sys = _worker_prompt(profile, goal)
     role = "finalize" if finalize else f"worker:{task['id']}"
     user_msg = (
         f"TASK:\n{task_text}\n\nPLAN:\n{ledger.read(ws, 'plan.md')}\n\n"
         f"NOTES:\n{ledger.read(ws, 'notes.md')}\n\n"
-        f"CURRENT WORK ({profile.artifact_file}):\n{cur or '(none yet)'}\n\n"
+        f"CURRENT DELIVERABLE (files under 'out/'):\n{ledger.out_brief(ws) or '(none yet)'}\n\n"
         f"WORKSPACE FILES:\n{tools.file_listing(ws)}\n\n"
         f"YOUR TASK: {goal}\n"
-        f"Write your final deliverable to '{profile.artifact_file}' using write_file."
+        f"Write your deliverable file(s) under 'out/' using write_file."
     )
     messages = [
         {"role": "system", "content": sys},
@@ -535,28 +529,18 @@ def _worker(task_text, profile, ws, task, chat, say, last_meta, finalize=False, 
         reply, tool_log = chat(role, messages, profile.temps.get("worker", 0.2)), []
     sec = ledger.sections(reply)
 
-    # The deliverable is a real file now: did the artifact change this turn?
-    after = ledger.read(ws, profile.artifact_file)
-    wrote = after.strip() != cur.strip()
+    # The deliverable is the 'out/' directory: did it change this turn?
+    after = ledger.out_snapshot(ws)
+    wrote = after != cur
 
-    # Fallback for models that don't use the file tools: write the section to disk.
+    # Fallback for models that don't use the file tools: if 'out/' is still empty
+    # but the reply carries a deliverable, save it to out/result.md.
     if not wrote:
-        if profile.kind == "code":
-            fence = profile.code_fence or "python"
-            code = (ledger.extract_fenced(sec.get("CODE", ""), fence)
-                    or ledger.extract_fenced(reply, fence))
-            if code:
-                ledger.write(ws, profile.artifact_file, code)
-                wrote = True
-        else:
-            ans = sec.get("ANSWER", "").strip()
-            if not ans and profile.answer_marker and re.search(profile.answer_marker, reply, re.I) \
-                    and len(reply) < ledger.MAX_ANSWER_CHARS:
-                ans = ledger.strip_think(reply).strip()
-            if ans and (not profile.answer_marker or re.search(profile.answer_marker, ans, re.I)
-                       or not ledger.read(ws, profile.artifact_file).strip()):
-                ledger.write(ws, profile.artifact_file, ans)
-                wrote = True
+        ans = sec.get("ANSWER", "").strip() or ledger.strip_think(reply).strip()
+        if ans and len(ans) < ledger.MAX_ANSWER_CHARS:
+            ledger.write(ws, f"{ledger.OUT_DIR}/result.md", ans)
+            after = ledger.out_snapshot(ws)
+            wrote = after != cur
 
     # Notes: if the worker didn't update notes.md itself, fall back to ### NOTES.
     if (ledger.read(ws, "notes.md").strip() == before_notes.strip()

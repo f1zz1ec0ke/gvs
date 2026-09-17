@@ -45,7 +45,7 @@ def make_tool_mock():
             state["worker_calls"] += 1
             if state["worker_calls"] == 1:
                 return ('```tool\n'
-                        '{"name": "write_file", "args": {"path": "result.md", '
+                        '{"name": "write_file", "args": {"path": "out/result.md", '
                         '"content": "# Real Deliverable\\n\\nThis was written by a tool call."}}\n'
                         '```')
             return ("### STATUS\nsolved\n### NEXT\nnone\n"
@@ -72,7 +72,7 @@ def main():
             "Write a one-paragraph deliverable about testing.", profile, "mock:tool",
             ws_root=ws_root, max_iters=3, log=lambda m: print(m))
         ws = status["ws"]
-        art = ledger.read(ws, profile.artifact_file)
+        art = ledger.read(ws, "out/result.md")
         check("worker wrote the artifact via a tool call", "Real Deliverable" in art)
         check("artifact is the tool-written content", "tool call" in art)
 
@@ -84,9 +84,9 @@ def main():
         fed_back = [r for r in recs if "TOOL RESULT" in str(r.get("request", ""))]
         check("tool result was fed back to the model", len(fed_back) >= 1)
 
-        # the file must exist on disk in the workspace
-        check("result.md exists on disk",
-              os.path.isfile(os.path.join(ws, "result.md")))
+        # the file must exist on disk in the workspace (under out/)
+        check("out/result.md exists on disk",
+              os.path.isfile(os.path.join(ws, "out", "result.md")))
         print("\nartifact:")
         for line in art.splitlines()[:6]:
             print("   |", line)

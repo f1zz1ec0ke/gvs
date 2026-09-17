@@ -20,12 +20,12 @@ WS_ROOT = os.path.join(os.path.dirname(__file__), "_ws")
 def show(label, status):
     print(f"\n=== {label} ===")
     print(f"  ws            : {status['ws']}")
-    print(f"  profile       : {status['profile']}  kind via artifact {status['artifact_file']}")
+    print(f"  profile       : {status['profile']}  deliverable dir {status['artifact_dir']}/")
     print(f"  calls         : {status['n_calls']}   iters: {status['iters']}")
     print(f"  finish_reason : {status['finish_reason']}   truncated: {status['truncated_calls']}")
     print(f"  has_artifact  : {status['has_artifact']}   stopped: {status['stopped']}")
-    art = ledger.read(status["ws"], status["artifact_file"])
-    print(f"  artifact ({len(art)} chars):")
+    art = ledger.out_brief(status["ws"])
+    print(f"  deliverable ({len(art)} chars):")
     for line in art.splitlines()[:8]:
         print(f"    | {line}")
 
@@ -43,8 +43,8 @@ def main():
                   verifier=run_python_tests, tests=tests,
                   log=lambda m: print(m))
     assert s1["has_artifact"], "code run produced no artifact"
-    art = ledger.read(s1["ws"], "solution.py")
-    assert "def main" in art, "mock code not written"
+    art = ledger.read(s1["ws"], "out/solution.py")
+    assert "def main" in art, "mock code not written to out/solution.py"
     # the verifier must have actually run and passed (check transcript logs)
     show("code + verifier", s1)
 
@@ -54,7 +54,7 @@ def main():
                   ws_root=WS_ROOT, max_iters=6,
                   log=lambda m: print(m))
     assert s2["has_artifact"], "math run produced no artifact"
-    assert "ANSWER:" in ledger.read(s2["ws"], "answer.md"), "no ANSWER: marker"
+    assert "ANSWER:" in ledger.read(s2["ws"], "out/result.md"), "no ANSWER: marker in out/result.md"
     show("math (answer-style)", s2)
 
     # 3) general profile, no verifier
@@ -74,8 +74,8 @@ def main():
     assert any(r.startswith("worker") for r in roles)
     assert "primary_manage" in roles
 
-    # 5) ledger files all present
-    for name in ("task.md", "plan.md", "notes.md", "tasks.json", "solution.py", "transcript.jsonl"):
+    # 5) ledger files all present (deliverable lives in out/)
+    for name in ("task.md", "plan.md", "notes.md", "tasks.json", "out", "transcript.jsonl"):
         assert os.path.exists(os.path.join(s1["ws"], name)), f"missing {name}"
     tasks = ledger.load_tasks(s1["ws"])
     print("final task list (code run):")

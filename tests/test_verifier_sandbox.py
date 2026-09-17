@@ -24,10 +24,10 @@ def check(name, cond):
 
 def ws_with(code):
     ws = tempfile.mkdtemp(prefix="gvs_verifier_")
-    prof = get_profile("code")
-    with open(os.path.join(ws, prof.artifact_file), "w", encoding="utf-8") as f:
+    os.makedirs(os.path.join(ws, "out"))
+    with open(os.path.join(ws, "out", "solution.py"), "w", encoding="utf-8") as f:
         f.write(code)
-    return ws, prof
+    return ws, get_profile("code")
 
 
 def main():

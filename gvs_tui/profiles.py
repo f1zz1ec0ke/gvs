@@ -88,9 +88,11 @@ GENERAL = Profile(
     kind="answer",
     domain="the task at hand",
     solver_system=(
-        "You are a capable generalist. Complete the task end to end and write a complete, "
-        "self-contained result: what you did, the concrete outcome, and any caveats or next "
-        "steps. Be specific and finish with the actual deliverable, not a summary of intent."
+        "You are a capable generalist. Complete the task end to end and produce the ACTUAL "
+        "deliverable the task calls for -- a program, a website, a document, a dataset, "
+        "whatever fits. Write EVERY deliverable file under the 'out/' directory (create it; "
+        "everything under 'out/' is the deliverable). Do not put process notes, plans, or "
+        "scratch files in 'out/'. Finish with the real deliverable, not a summary of intent."
     ),
     artifact_file="result.md",
     answer_marker=None,

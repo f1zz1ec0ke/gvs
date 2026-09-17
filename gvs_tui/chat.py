@@ -323,9 +323,9 @@ def _mock_section(text, header):
 
 
 def _mock_current_artifact(user):
-    m = re.search(r"CURRENT (?:SOLUTION|ANSWER|ARTIFACT):\n(.*?)\n\nNOTES:", user, re.DOTALL)
+    m = re.search(r"CURRENT DELIVERABLE[^\n]*:\n(.*?)\n\nNOTES:", user, re.DOTALL)
     if not m:
-        m = re.search(r"CURRENT (?:SOLUTION|ANSWER|ARTIFACT):\n(.*)", user, re.DOTALL)
+        m = re.search(r"CURRENT DELIVERABLE[^\n]*:\n(.*)", user, re.DOTALL)
     if not m:
         return ""
     val = m.group(1).strip()
@@ -344,13 +344,26 @@ def _mock_first_todo(user):
 
 
 def _mock_task_of(user):
-    m = re.search(r"YOUR TASK:\s*(.*)", user, re.DOTALL)
+    m = re.search(r"YOUR TASK:\s*(.+)", user)
     return (m.group(1).strip()[:120] if m else "the task")
+
+
+def _mock_original_task(user):
+    m = re.search(r"TASK:\n(.*?)\n\nPLAN:", user, re.DOTALL)
+    return (m.group(1).strip()[:200] if m else "the task")
+
+
+def _mock_is_code(task):
+    t = (task or "").lower()
+    return any(k in t for k in ("stdin", "stdout", "program", "code", "function"))
 
 
 def mock_chat(model, messages, temperature=0.2, meta=None):
     sysmsg = next((m["content"] for m in messages if m["role"] == "system"), "")
-    user = next((m["content"] for m in messages if m["role"] == "user"), "")
+    # the LAST user message: on a tool loop's follow-up turn it carries the
+    # "TOOL RESULT" the worker must react to (not re-issue a tool call for).
+    user_msgs = [m["content"] for m in messages if m["role"] == "user"]
+    user = user_msgs[-1] if user_msgs else ""
     if meta is not None:
         meta["finish_reason"] = "stop"
         meta["completion_tokens"] = 140
@@ -400,8 +413,13 @@ def mock_chat(model, messages, temperature=0.2, meta=None):
                 "- [todo] Implement the working solution\n"
                 "- [todo] Verify the result")
     if "WORKER subagent" in sysmsg:  # worker
-        if "### CODE" in sysmsg:
-            task = _mock_task_of(user)
+        # after a tool result, give the final sections (no tool block)
+        if "TOOL RESULT" in user:
+            return ("### STATUS\nsolved\n"
+                    "### NEXT\nnone\n"
+                    "### NOTES\n- **Status:** deliverable written to out/.\n")
+        task = _mock_task_of(user)
+        if _mock_is_code(_mock_original_task(user)):
             code = (
                 "import sys\n\n"
                 f"# mock solution for: {task}\n"
@@ -415,21 +433,16 @@ def mock_chat(model, messages, temperature=0.2, meta=None):
                 "if __name__ == \"__main__\":\n"
                 "    main()\n"
             )
-            return ("### CODE\n```python\n" + code + "```\n"
-                    "### NOTES\n- **Approach:** direct stdin/stdout program; square integer input, "
-                    "echo anything else.\n- **Status:** implemented and self-consistent.\n"
-                    "### NEXT\nnone\n"
-                    "### STATUS\nsolved")
-        task = _mock_task_of(user)
-        return ("### ANSWER\n"
-                f"Working through the task ({task}): the key step is to reduce it to a concrete "
-                "computation, carry it through, and check the boundary cases. The result is "
-                "consistent under that reduction.\n"
-                "ANSWER: 42\n"
-                "### NOTES\n- **Approach:** reduction to a concrete computation.\n"
-                "- **Checks:** boundary cases verified.\n"
-                "### NEXT\nnone\n"
-                "### STATUS\nsolved")
+            payload = json.dumps({"name": "write_file",
+                                  "args": {"path": "out/solution.py", "content": code}})
+        else:
+            content = (f"Working through the task ({task}): the key step is to reduce it to a "
+                       "concrete computation, carry it through, and check the boundary cases. "
+                       "The result is consistent under that reduction.\n"
+                       "ANSWER: 42\n")
+            payload = json.dumps({"name": "write_file",
+                                  "args": {"path": "out/result.md", "content": content}})
+        return "```tool\n" + payload + "\n```"
     return "OK"
 
 

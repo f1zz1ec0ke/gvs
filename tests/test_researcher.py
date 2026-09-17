@@ -56,7 +56,7 @@ def make_mock():
         if "WORKER subagent" in sysmsg:
             counts["worker"] += 1
             if counts["worker"] == 1:
-                return ('```tool\n{"name": "write_file", "args": {"path": "result.md", '
+                return ('```tool\n{"name": "write_file", "args": {"path": "out/result.md", '
                         '"content": "# Deliverable\\n\\nBased on the research, the answer is X."}}\n```')
             return ("### STATUS\nsolved\n### NEXT\nnone\n"
                     "### NOTES\n- Used the research to write the deliverable.")
@@ -93,10 +93,10 @@ def main():
             ws_root=ws_root, max_iters=5, search=FakeSearch(), log=lambda m: print(m))
         ws = status["ws"]
         research = ledger.read(ws, "research.md")
-        art = ledger.read(ws, "result.md")
+        art = ledger.read(ws, "out/result.md")
         check("research.md was written", "Key fact" in research)
         check("research.md cites a source", "https://s1" in research)
-        check("artifact was written (worker used the research)", "Based on the research" in art)
+        check("deliverable was written (worker used the research)", "Based on the research" in art)
 
         recs = [r for r in ledger.read_transcript(ws) if not r.get("_meta")]
         roles = [r.get("role") for r in recs]
