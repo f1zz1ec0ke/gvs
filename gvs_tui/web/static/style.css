@@ -216,6 +216,43 @@ html, body {
 }
 @keyframes blink { 50% { opacity: 0; } }
 
+/* manager thinking panel (hidden by default, click to expand) */
+.thinking { margin: 0 0 2px; }
+.thinking-toggle {
+  display: inline-flex; align-items: center; gap: 5px;
+  cursor: pointer; user-select: none;
+  font-size: 11px; color: var(--faint);
+  padding: 1px 4px; border-radius: 6px;
+}
+.thinking-toggle:hover { color: #b8c0d0; background: rgba(255,255,255,0.03); }
+.thinking-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--faint); display: inline-block;
+}
+.thinking.active .thinking-dot {
+  background: var(--accent);
+  animation: thinkpulse 1s ease-in-out infinite;
+}
+@keyframes thinkpulse {
+  0%, 100% { opacity: 0.35; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1.25); }
+}
+.thinking-caret { transition: transform 0.18s ease; font-size: 10px; }
+.thinking.open .thinking-caret { transform: rotate(90deg); }
+.thinking-body {
+  max-height: 0; overflow: hidden;
+  transition: max-height 0.22s ease;
+  font-size: 12px; line-height: 1.5;
+  color: var(--faint); white-space: pre-wrap; word-break: break-word;
+}
+.thinking.open .thinking-body {
+  max-height: 320px; overflow-y: auto;
+  margin: 5px 0 2px; padding: 7px 10px;
+  border-left: 2px solid var(--line);
+  background: rgba(255,255,255,0.02);
+  border-radius: 0 8px 8px 0;
+}
+
 @keyframes fade-in {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }

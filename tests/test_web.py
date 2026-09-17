@@ -31,7 +31,7 @@ def fake_compat_chat(model, messages, temperature=0.2, meta=None):
 def fake_compat_chat_stream(model, messages, temperature=0.2, meta=None):
     full = mock_chat(model, messages, temperature, meta)
     for ch in full:
-        yield ch
+        yield ("content", ch)
 
 
 # patch both the module global (used by the loop's dispatch) and server's own
@@ -122,6 +122,40 @@ def test_websocket_stream():
             assert "chat_message" in types, f"no chat events: {types}"
             assert "done" in types, f"no done event: {types}"
     print("WebSocket stream: OK")
+
+
+def test_manager_thinking_and_run():
+    st = ServerState()
+    st.cfg.model = "gvs"
+    st.cfg.profile = "general"
+    st.cfg.max_iters = 3
+    app = create_app(st)
+
+    def thinking_stream(model, messages, temperature=0.2, meta=None):
+        yield ("reasoning", "Let me think. ")
+        yield ("reasoning", "I should start the run. ")
+        yield ("content", "Starting now.\n")
+        yield ("content", "RUN: Read an int and print its square.")
+        if meta is not None:
+            meta["finish_reason"] = "stop"
+            meta["content"] = "Starting now.\nRUN: Read an int and print its square."
+            meta["reasoning"] = "Let me think. I should start the run. "
+
+    orig = server.compat_chat_stream
+    server.compat_chat_stream = thinking_stream
+    try:
+        with TestClient(app) as client:
+            client.post("/api/chat", json={"message": "Please start the run."})
+            # the manager message should carry the captured reasoning
+            def has_reasoning(s):
+                return any(m.get("role") == "manager" and m.get("reasoning")
+                           for m in s["current"]["chat"])
+            wait_for(client, has_reasoning)
+            # the RUN: marker should have kicked off a run (state leaves idle)
+            wait_for(client, lambda s: s["run"]["state"] != "idle")
+    finally:
+        server.compat_chat_stream = orig
+    print("Manager thinking + RUN dispatch: OK")
 
 
 def test_open_and_continue():
@@ -262,6 +296,7 @@ def test_file_browser_tool_written():
 if __name__ == "__main__":
     test_rest_flow()
     test_websocket_stream()
+    test_manager_thinking_and_run()
     test_open_and_continue()
     test_file_browser()
     test_file_browser_tool_written()

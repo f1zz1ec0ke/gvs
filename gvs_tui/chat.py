@@ -461,7 +461,10 @@ def compat_chat(model, messages, temperature=0.2, meta=None):
 
 
 def compat_chat_stream(model, messages, temperature=0.2, meta=None):
-    """Streaming call; yields content deltas. Fills ``meta`` on completion."""
+    """Streaming call; yields ``(kind, delta)`` tuples where ``kind`` is
+    ``"content"`` (the answer) or ``"reasoning"`` (the model's thinking).
+    Fills ``meta`` on completion (``meta["reasoning"]`` and ``meta["content"]``).
+    """
     import httpx
 
     url = _completions_url(_COMPAT_BASE_URL)
@@ -472,7 +475,8 @@ def compat_chat_stream(model, messages, temperature=0.2, meta=None):
             "temperature": temperature}
     if CLOUD_MAX_TOKENS > 0:
         body["max_tokens"] = CLOUD_MAX_TOKENS
-    parts = []
+    content_parts = []
+    reason_parts = []
     with httpx.Client(timeout=CLOUD_TIMEOUT) as client:
         with client.stream("POST", url, json=body, headers=headers) as r:
             r.raise_for_status()
@@ -489,14 +493,20 @@ def compat_chat_stream(model, messages, temperature=0.2, meta=None):
                 choices = ev.get("choices") or []
                 if not choices:
                     continue
-                delta = (choices[0].get("delta") or {}).get("content") or ""
-                if delta:
-                    parts.append(delta)
-                    yield delta
+                delta = choices[0].get("delta") or {}
+                ct = delta.get("content") or ""
+                rt = delta.get("reasoning_content") or delta.get("reasoning") or ""
+                if ct:
+                    content_parts.append(ct)
+                    yield ("content", ct)
+                if rt:
+                    reason_parts.append(rt)
+                    yield ("reasoning", rt)
     if meta is not None:
         meta["finish_reason"] = "stop"
         meta["provider"] = "compat"
-        meta["reasoning"] = ""
+        meta["reasoning"] = "".join(reason_parts)
+        meta["content"] = "".join(content_parts)
 
 
 def fetch_models(base_url=None, api_key=None, timeout=15):

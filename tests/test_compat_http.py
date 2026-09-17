@@ -74,11 +74,14 @@ def test_compat_http():
     assert out == "Hello world!", out
     assert meta.get("completion_tokens") == 3, meta
 
-    # streaming
+    # streaming (yields (kind, delta) tuples)
     meta2 = {}
-    parts = list(chatmod.compat_chat_stream("test-1", [{"role": "user", "content": "hi"}], meta=meta2))
+    stream = list(chatmod.compat_chat_stream("test-1", [{"role": "user", "content": "hi"}], meta=meta2))
+    parts = [d for kind, d in stream if kind == "content"]
     assert "".join(parts) == "Hello world!", parts
     assert meta2.get("finish_reason") == "stop", meta2
+    assert meta2.get("content") == "Hello world!", meta2
+    assert all(kind in ("content", "reasoning") for kind, _ in stream), stream
 
     # fetch models
     models = chatmod.fetch_models(base, "")

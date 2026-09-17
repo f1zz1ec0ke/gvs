@@ -193,10 +193,12 @@ def read_chat(ws):
     return recs
 
 
-def append_chat(ws, role, text):
+def append_chat(ws, role, text, reasoning=""):
+    rec = {"role": role, "text": text, "t": now()}
+    if reasoning:
+        rec["reasoning"] = reasoning
     with open(_path(ws, "chat.jsonl"), "a", encoding="utf-8") as f:
-        f.write(json.dumps({"role": role, "text": text, "t": now()},
-                           ensure_ascii=False) + "\n")
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
 def recent_chat(ws, n=10):

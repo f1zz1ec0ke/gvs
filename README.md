@@ -58,11 +58,14 @@ generalizes it:
 - **Live TUI** (`gvs_tui/app.py`) — paste a task, pick model/profile, watch the ledger,
   task list, transcript, and token usage update in real time, and steer the run.
 - **Live web GUI** (`gvs_tui/web/`) — a build-free single-page app (vanilla JS/CSS) served by
-  the same FastAPI process. Chat with the manager, hit **Run**, and watch the whole run live:
-  a streaming chat, a workbench (plan / task checklist / notes / artifact), a **Files** browser
-  for everything in the workspace, and a **timeline** of every model call you can zoom into
-  (full prompt, raw response, parsed sections, and each `🔧` tool step). Runs are saved and can
-  be reopened or continued.
+  the same FastAPI process. Chat with the manager and watch the whole run live: a streaming
+  chat, a workbench (plan / task checklist / notes / artifact), a **Files** browser for
+  everything in the workspace, and a **timeline** of every model call you can zoom into (full
+  prompt, raw response, parsed sections, and each `🔧` tool step). The manager's **thinking**
+  (`reasoning_content`) streams into a collapsed "thinking…" panel (click to expand) so you can
+  see where it's going even when the visible reply is short or empty. The manager can also
+  **start the run itself** by ending a reply with `RUN: <task>` (or `RUN:` for the current
+  task) -- you don't have to click Run. Runs are saved and can be reopened or continued.
 - **Mock provider** (`mock:` in `gvs_tui/chat.py`) — a deterministic fake model so the whole
   loop runs and is verifiable with **no API key**.
 

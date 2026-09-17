@@ -163,11 +163,12 @@ function onStatus(ev) {
 }
 
 function onChatToken(ev) {
-  R.appendToken(els.chatLog, ev.id, ev.delta);
+  if (ev.kind === "reasoning") R.appendThinking(els.chatLog, ev.id, ev.delta);
+  else R.appendToken(els.chatLog, ev.id, ev.delta);
 }
 
 function onChatMessage(ev) {
-  if (ev.role === "manager") R.finalizeStreaming(els.chatLog, ev.id, ev.text);
+  if (ev.role === "manager") R.finalizeStreaming(els.chatLog, ev.id, ev.text, ev.reasoning);
   else R.addMessage(els.chatLog, ev);
 }
 

@@ -77,6 +77,39 @@ export function renderChatFull(chat, chatLogEl) {
   chatLogEl.scrollTop = chatLogEl.scrollHeight;
 }
 
+function thinkingHtml() {
+  return `<div class="thinking">` +
+    `<div class="thinking-toggle" role="button" tabindex="0">` +
+    `<span class="thinking-dot"></span>` +
+    `<span class="thinking-label">thinking…</span>` +
+    `<span class="thinking-caret">▸</span></div>` +
+    `<div class="thinking-body"></div></div>`;
+}
+
+function attachThinkingToggle(t) {
+  if (!t || t.dataset.bound) return;
+  t.dataset.bound = "1";
+  const tog = t.querySelector(".thinking-toggle");
+  const toggle = () => t.classList.toggle("open");
+  tog.addEventListener("click", toggle);
+  tog.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+  });
+}
+
+function setThinking(el, reasoning, active) {
+  let t = el.querySelector(".thinking");
+  if (!t) {
+    t = h(thinkingHtml());
+    el.querySelector(".body").before(t);
+  }
+  if (reasoning != null) t.querySelector(".thinking-body").textContent = reasoning;
+  t.querySelector(".thinking-label").textContent = active ? "thinking…" : "thinking";
+  t.classList.toggle("active", !!active);
+  attachThinkingToggle(t);
+  return t;
+}
+
 export function addMessage(chatLogEl, m) {
   hideEmpty(chatLogEl);
   const cls = m.role === "user" ? "user" : m.role === "manager" ? "manager" : "system";
@@ -85,6 +118,7 @@ export function addMessage(chatLogEl, m) {
     (m.role !== "system" ? `<div class="who">${esc(m.role)}</div>` : "") +
     `<div class="body">${esc(m.text)}</div></div>`
   );
+  if (m.reasoning) setThinking(el, m.reasoning, false);
   chatLogEl.appendChild(el);
   scrollChat(chatLogEl, true);
   return el;
@@ -107,13 +141,28 @@ export function appendToken(chatLogEl, id, delta) {
   if (!el) el = startStreaming(chatLogEl, id);
   const txt = el.querySelector(".txt");
   txt.textContent += delta;
+  // content has started -> the thinking phase is over (stop the animation)
+  const t = el.querySelector(".thinking");
+  if (t && txt.textContent) t.classList.remove("active");
   scrollChat(chatLogEl, false);
 }
 
-export function finalizeStreaming(chatLogEl, id, text) {
+export function appendThinking(chatLogEl, id, delta) {
+  let el = chatLogEl.querySelector(`.msg[data-id="${id}"]`);
+  if (!el) el = startStreaming(chatLogEl, id);
+  const t = setThinking(el, null, true);  // active = still thinking
+  t.querySelector(".thinking-body").textContent += delta;
+  scrollChat(chatLogEl, false);
+}
+
+export function finalizeStreaming(chatLogEl, id, text, reasoning) {
   const el = chatLogEl.querySelector(`.msg[data-id="${id}"]`);
-  if (!el) { addMessage(chatLogEl, { id, role: "manager", text }); return; }
-  el.querySelector(".body").innerHTML = esc(text);
+  if (!el) { addMessage(chatLogEl, { id, role: "manager", text, reasoning }); return; }
+  const body = el.querySelector(".body");
+  body.innerHTML = text
+    ? esc(text)
+    : '<span class="dim">(no reply -- it was still thinking; expand "thinking" above to see what it was considering)</span>';
+  if (reasoning) setThinking(el, reasoning, false);
   scrollChat(chatLogEl, true);
 }
 

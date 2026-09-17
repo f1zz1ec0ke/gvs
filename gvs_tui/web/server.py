@@ -8,6 +8,7 @@ run is active at a time. The OpenAI-compatible endpoint is config-driven
 
 import os
 import json
+import re
 import time
 import asyncio
 import dataclasses
@@ -155,25 +156,29 @@ class ChatHub:
     def post_user(self, text):
         return self.post("user", text)
 
-    def stream_manager(self, messages, model_name):
+    def stream_manager(self, messages, model_name, on_complete=None):
         ws = self.get_ws()
         mid = self._new_id()
 
         def work():
             meta = {}
-            parts = []
+            content_parts = []
+            reason_parts = []
             try:
-                for delta in compat_chat_stream(model_name, messages,
-                                                temperature=0.3, meta=meta):
-                    parts.append(delta)
+                for kind, delta in compat_chat_stream(model_name, messages,
+                                                     temperature=0.3, meta=meta):
+                    (content_parts if kind == "content" else reason_parts).append(delta)
                     self.broadcaster.broadcast(
-                        {"type": "chat_token", "id": mid, "delta": delta})
-                full = "".join(parts)
+                        {"type": "chat_token", "id": mid, "kind": kind, "delta": delta})
+                full = "".join(content_parts)
+                reasoning = "".join(reason_parts)
                 if ws:
-                    ledger.append_chat(ws, "manager", full)
+                    ledger.append_chat(ws, "manager", full, reasoning=reasoning)
                 self.broadcaster.broadcast(
                     {"type": "chat_message", "id": mid, "role": "manager",
-                     "text": full, "t": time.time()})
+                     "text": full, "reasoning": reasoning, "t": time.time()})
+                if on_complete:
+                    on_complete(full)
             except Exception as e:  # noqa: BLE001 - surfaced to the client
                 self.broadcaster.broadcast(
                     {"type": "chat_error", "id": mid,
@@ -196,7 +201,13 @@ def manager_messages(ws, text, profile):
         "practical: acknowledge the task, explain your plan, answer questions, "
         "and give clear direction. You do NOT write the final artifact yourself -- "
         "worker subagents do. Keep replies to a few sentences unless the user asks "
-        "for detail."
+        "for detail.\n"
+        "You can START THE RUN yourself. When the user asks you to begin, or you judge "
+        "the task ready to go, end your reply with a line of the form:\n"
+        "RUN: <the task to run>\n"
+        "Use 'RUN:' alone (nothing after it) to run the current task, or 'RUN: <refined "
+        "task>' to run a refined version. Do NOT emit a RUN: line unless you actually "
+        "intend to start the run."
     )
     user = (
         f"TASK:\n{task}\n\n"
@@ -404,6 +415,55 @@ def ensure_workspace(st, task):
     return st.current_ws
 
 
+def start_run(st, task, fresh=True):
+    """Start a run for ``task``. Returns ``(ok, message)``.
+
+    Shared by the ``/api/run`` endpoint and the manager-chat ``RUN:`` trigger so
+    the manager can kick off a run itself, not just the user.
+    """
+    if st.runs.is_busy():
+        return False, "a run is already active"
+    task = (task or st.current_task or "").strip()
+    if not task:
+        return False, "no task yet -- send a task in the chat first"
+    apply_config(st.cfg)
+    ensure_workspace(st, task)
+    profile = safe_profile(st.cfg.profile)
+    if st.cfg.temperature is not None:
+        profile = dataclasses.replace(
+            profile, temps={k: st.cfg.temperature for k in profile.temps})
+    st.current_profile = profile
+    st.current_task = task
+    tests = parse_tests(st.cfg.tests)
+    verifier = run_python_tests if (profile.kind == "code" and tests) else None
+    if not st.cfg.model:
+        return False, "no model configured -- set it in Settings"
+    st.runs.start(task, profile, f"compat:{st.cfg.model}",
+                  st.cfg.max_iters, verifier, tests, fresh=fresh)
+    return True, "started"
+
+
+def _maybe_start_run(st, manager_text):
+    """If the manager's reply carries a ``RUN:`` marker, start the run.
+
+    The convention (see the manager system prompt): end a reply with
+    ``RUN: <task>`` to run a (refined) task, or ``RUN:`` alone to run the
+    current task. This lets the manager kick off a run itself.
+    """
+    m = re.search(r"^RUN:\s*(.*)$", manager_text, re.M)
+    if not m:
+        return
+    task = (m.group(1) or st.current_task or "").strip()
+    if not task:
+        st.hub.post("manager", "I need a task to run -- tell me what to work on.")
+        return
+    ok, msg = start_run(st, task, fresh=True)
+    if ok:
+        st.hub.post("manager", f"Starting the run on: {task[:100]}")
+    else:
+        st.hub.post("manager", f"I can't start the run yet -- {msg}.")
+
+
 def state_payload(st):
     ws = st.current_ws
     profile = st.current_profile
@@ -575,30 +635,17 @@ def create_app(state: ServerState | None = None) -> FastAPI:
             st.hub.post("manager",
                         "No model configured yet -- set the model in Settings, then I can get to work.")
             return {"ok": True}
-        st.hub.stream_manager(msgs, st.cfg.model)
+        st.hub.stream_manager(msgs, st.cfg.model,
+                              on_complete=lambda t: _maybe_start_run(st, t))
         return {"ok": True}
 
     # ---- run control ----
     @app.post("/api/run")
     def _run(body: RunIn):
-        if st.runs.is_busy():
-            raise HTTPException(409, "a run is already active")
-        task = (body.task or st.current_task or "").strip()
-        if not task:
-            raise HTTPException(400, "no task yet -- send a task in the chat first")
-        apply_config(st.cfg)
-        ensure_workspace(st, task)
-        profile = safe_profile(st.cfg.profile)
-        if st.cfg.temperature is not None:
-            profile = dataclasses.replace(
-                profile, temps={k: st.cfg.temperature for k in profile.temps})
-        st.current_profile = profile
-        tests = parse_tests(st.cfg.tests)
-        verifier = run_python_tests if (profile.kind == "code" and tests) else None
-        if not st.cfg.model:
-            raise HTTPException(400, "no model configured -- set it in Settings")
-        st.runs.start(task, profile, f"compat:{st.cfg.model}",
-                      st.cfg.max_iters, verifier, tests, fresh=body.fresh)
+        ok, msg = start_run(st, body.task or st.current_task, fresh=body.fresh)
+        if not ok:
+            code = 409 if "already active" in msg else 400
+            raise HTTPException(code, msg)
         return {"ok": True}
 
     @app.post("/api/stop")
