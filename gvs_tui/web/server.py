@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .. import ledger
+from .. import tools
 import gvs_tui.chat as chatmod
 from ..chat import set_compat_endpoint, compat_chat_stream, fetch_models
 from ..profiles import PROFILES, get_profile
@@ -492,22 +493,25 @@ def create_app(state: ServerState | None = None) -> FastAPI:
         if not st.current_ws or not os.path.isdir(st.current_ws):
             return {"files": []}
         files = []
-        for name in sorted(os.listdir(st.current_ws)):
-            p = os.path.join(st.current_ws, name)
-            if os.path.isfile(p):
-                s = os.stat(p)
-                files.append({"name": name, "size": s.st_size, "mtime": s.st_mtime})
+        for root, _dirs, names in os.walk(st.current_ws):
+            for name in names:
+                p = os.path.join(root, name)
+                if os.path.isfile(p):
+                    s = os.stat(p)
+                    rel = os.path.relpath(p, st.current_ws).replace(os.sep, "/")
+                    files.append({"name": rel, "size": s.st_size, "mtime": s.st_mtime})
+        files.sort(key=lambda f: f["name"])
         return {"files": files}
 
     @app.get("/api/file")
     def _file(name: str):
         if not st.current_ws or not os.path.isdir(st.current_ws):
             raise HTTPException(404, "no workspace open")
-        # reject path traversal / directory names
-        if (not name or name in (".", "..") or ".." in name
-                or "/" in name or "\\" in name or name.startswith("~")):
-            raise HTTPException(400, "invalid file name")
-        p = os.path.join(st.current_ws, name)
+        # confine to the workspace: nested relative paths are allowed, traversal is not
+        try:
+            p = tools.safe_path(st.current_ws, name)
+        except tools.ToolError as e:
+            raise HTTPException(400, f"invalid file name: {e}")
         if not os.path.isfile(p):
             raise HTTPException(404, "file not found")
         try:

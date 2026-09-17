@@ -188,20 +188,61 @@ export function renderTimeline(calls, els, onSelect) {
 
 /* ---------------- call detail ---------------- */
 
+/* Parse a ```tool fenced JSON block (or TOOLCALL: line) out of a model response.
+   Mirrors the backend gvs_tui.tools.parse_tool_block. */
+function parseToolCall(text) {
+  if (!text) return null;
+  let m = text.match(/```tool[ \t]*\n([\s\S]*?)```/);
+  if (!m) {
+    const m2 = text.match(/^\s*TOOLCALL:\s*(\{.*\})\s*$/m);
+    if (!m2) return null;
+    m = m2;
+  }
+  try {
+    const obj = JSON.parse(m[1].trim());
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
+    const name = obj.name;
+    if (typeof name !== "string" || !name.trim()) return null;
+    const args = obj.args && typeof obj.args === "object" && !Array.isArray(obj.args) ? obj.args : {};
+    return { name: name.trim(), args };
+  } catch { return null; }
+}
+
+function toolArgSummary(args) {
+  const parts = [];
+  for (const [k, v] of Object.entries(args || {})) {
+    if (k === "content" && typeof v === "string") parts.push(`content=<${v.length} chars>`);
+    else if (typeof v === "string") parts.push(`${k}=${v.length > 40 ? v.slice(0, 37) + "…" : v}`);
+    else parts.push(`${k}=${JSON.stringify(v)}`);
+  }
+  return parts.join(", ");
+}
+
 export function renderCallDetail(call, index, els, onBack) {
   const tl = els.timeline;
   const rm = roleMeta(call.role);
   const secs = sections(call.response);
+  const toolCall = parseToolCall(call.response);
 
   let html = `<button class="crumb" id="crumb-back">← Timeline</button>`;
   html += `<div class="detail-head" style="--role:${rm.color}">
     <h3>Call ${index + 1}</h3>
     <span class="chip role">${rm.label}</span>
+    ${toolCall ? `<span class="chip tool" title="This call is a tool invocation">🔧 ${esc(toolCall.name)}</span>` : ""}
     <span class="chip">${fmtTokens(call.prompt_tokens || 0)}→${fmtTokens(call.completion_tokens || 0)} tok</span>
     <span class="chip">${esc(call.finish_reason || "?")}</span>
     ${call.provider ? `<span class="chip">${esc(call.provider)}</span>` : ""}
     ${call.attempts ? `<span class="chip">${call.attempts} attempt${call.attempts > 1 ? "s" : ""}</span>` : ""}
   </div>`;
+
+  if (toolCall) {
+    html += `<div class="detail-section tool-section">
+      <div class="label">Tool call</div>
+      <div class="tool-card">
+        <div class="tool-name">🔧 ${esc(toolCall.name)}<span class="tool-args">${esc(toolArgSummary(toolCall.args))}</span></div>
+        <pre class="code"><code>${esc(JSON.stringify(toolCall, null, 2))}</code></pre>
+      </div></div>`;
+  }
 
   html += `<div class="detail-section"><div class="label">Prompt</div>`;
   for (const m of (call.request || [])) {

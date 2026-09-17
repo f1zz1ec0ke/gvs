@@ -154,6 +154,20 @@ console.log("render.js — call detail");
   check("detail copy button", h.includes("copy-resp"));
 }
 
+console.log("render.js — call detail (tool call)");
+{
+  const e = els();
+  const toolResp = '```tool\n{"name": "write_file", "args": {"path": "result.md", "content": "# Brief"}}\n```';
+  const call = { role: "worker:1", prompt_tokens: 30, completion_tokens: 40, finish_reason: "stop", provider: "compat", attempts: 1,
+    request: [{ role: "system", content: "You are a worker" }, { role: "user", content: "Do the task" }],
+    response: toolResp };
+  R.renderCallDetail(call, 1, e, () => {});
+  const h = e.timeline.innerHTML;
+  check("tool chip shown", h.includes("chip tool") && h.includes("write_file"));
+  check("tool section shown", h.includes("Tool call") && h.includes("tool-card"));
+  check("tool args summarised", h.includes("path=result.md") && h.includes("content=&lt;7 chars&gt;"));
+}
+
 console.log("render.js — artifact");
 {
   const e = els();

@@ -198,7 +198,65 @@ def test_file_browser():
         # missing file -> 404
         r = client.get("/api/file", params={"name": "nope.md"})
         assert r.status_code == 404, r.status_code
+        # nested files (workers may write to subdirs) are listed and readable
+        ws = s["current"]["ws"]
+        os.makedirs(os.path.join(ws, "notes"), exist_ok=True)
+        with open(os.path.join(ws, "notes", "research.md"), "w", encoding="utf-8") as f:
+            f.write("nested research notes")
+        r = client.get("/api/files")
+        names = {f["name"] for f in r.json()["files"]}
+        assert "notes/research.md" in names, names
+        r = client.get("/api/file", params={"name": "notes/research.md"})
+        assert r.status_code == 200, r.text
+        assert "nested research notes" in r.json()["content"], r.json()["content"]
     print("file browser: OK")
+
+
+def test_file_browser_tool_written():
+    """A worker that emits a write_file tool call produces a file that appears
+    in /api/files with the tool-written content (the B-full chain)."""
+    state = {"worker_calls": 0}
+
+    def tool_mock(model, messages, temperature=0.2, meta=None):
+        if meta is not None:
+            meta["provider"] = "mock:tool"
+            meta["finish_reason"] = "stop"
+        sysmsg = messages[0]["content"]
+        if "WORKER subagent" in sysmsg:
+            state["worker_calls"] += 1
+            if state["worker_calls"] == 1:
+                return ('```tool\n{"name": "write_file", "args": {"path": "result.md", '
+                        '"content": "# Tool Written Deliverable\\n\\nMade via write_file."}}\n```')
+            return "### STATUS\nsolved\n### NEXT\nnone\n### NOTES\n- Wrote via tool."
+        if "FIRST WORKER" in sysmsg:
+            return "### NOTES\n- A\n### NEXT\n- Try A"
+        if "overarching plan" in sysmsg:
+            return "### PLAN\nPlan.\n### TASKS\n- [todo] Produce it"
+        if "CUT OFF" in sysmsg:
+            return "Partway."
+        return "### STATUS\ndone\n### NEXT\nnone\n### TASKS\n- [done] Produce it\n### UPDATE\nDone."
+
+    st = ServerState()
+    st.cfg.model = "gvs"
+    st.cfg.profile = "general"
+    st.cfg.max_iters = 3
+    app = create_app(st)
+    orig = chatmod.compat_chat
+    chatmod.compat_chat = tool_mock
+    try:
+        with TestClient(app) as client:
+            client.post("/api/run", json={"task": "Write a one-paragraph deliverable about testing."})
+            s = wait_for(client, lambda x: x["run"]["state"] in ("done", "stopped", "error"))
+            assert s["run"]["state"] == "done", s["run"]
+            r = client.get("/api/files")
+            names = {f["name"] for f in r.json()["files"]}
+            assert "result.md" in names, names
+            r = client.get("/api/file", params={"name": "result.md"})
+            assert r.status_code == 200, r.text
+            assert "Tool Written Deliverable" in r.json()["content"], r.json()["content"]
+    finally:
+        chatmod.compat_chat = orig
+    print("file browser (tool-written): OK")
 
 
 if __name__ == "__main__":
@@ -206,4 +264,5 @@ if __name__ == "__main__":
     test_websocket_stream()
     test_open_and_continue()
     test_file_browser()
+    test_file_browser_tool_written()
     print("\nALL WEB BACKEND TESTS PASSED")

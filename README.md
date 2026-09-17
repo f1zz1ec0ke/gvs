@@ -49,11 +49,34 @@ generalizes it:
   task list, transcript, and token usage update in real time, and steer the run.
 - **Live web GUI** (`gvs_tui/web/`) — a build-free single-page app (vanilla JS/CSS) served by
   the same FastAPI process. Chat with the manager, hit **Run**, and watch the whole run live:
-  a streaming chat, a workbench (plan / task checklist / notes / artifact), and a **timeline**
-  of every model call you can zoom into (full prompt + raw response + parsed sections).
-  Runs are saved and can be reopened or continued.
+  a streaming chat, a workbench (plan / task checklist / notes / artifact), a **Files** browser
+  for everything in the workspace, and a **timeline** of every model call you can zoom into
+  (full prompt, raw response, parsed sections, and each `🔧` tool step). Runs are saved and can
+  be reopened or continued.
 - **Mock provider** (`mock:` in `gvs_tui/chat.py`) — a deterministic fake model so the whole
   loop runs and is verifiable with **no API key**.
+
+## Shared workspace & file tools
+
+The ledger is not just read-only text pasted into prompts. Every run owns a **real
+workspace directory** (`runs/ws/<slug>`) that the agents can **read and write**. Workers get
+a minimal, **sandboxed file toolset** — `ls`, `read_file`, `write_file`, `append_file` —
+confined to that directory (no shell, no network, no code execution), driven by a
+model-agnostic **JSON-in-text tool protocol** (a `tool`-tagged fenced JSON block), so it
+works on any OpenAI-compatible endpoint.
+
+- A **worker** uses the tools to *actually create* its deliverable (written to the profile's
+  artifact file, e.g. `result.md`) plus any supporting files (research notes, drafts,
+  subdirectories). It no longer has to cram everything into one response, and it can't
+  "describe" a file it didn't write — the file is real and verifiable.
+- The **manager** gets **read-only** tools (`ls`, `read_file`) plus a live file listing, so it
+  can inspect what workers actually produced before deciding the next step.
+- Each tool call is a recorded model call: the **Timeline** shows every tool step (a green
+  `🔧` chip with the tool name and args), and the **Files** tab lets you browse everything that
+  exists in the workspace.
+- Safety: every path is resolved and checked to stay under the workspace root, writes are
+  size-capped, and there's a cap on tool calls per role turn. The **verifier** remains the only
+  code-execution path (harness-controlled, for ground-truth tests).
 
 ## Install
 
@@ -107,7 +130,8 @@ Then open the printed URL. The workflow:
    - the **chat** fill with the manager's progress (plan ready, worker finished, tests, done);
    - the **Overview** tab — plan, live task checklist, notes, and an activity log;
    - the **Timeline** tab — every model call as it lands; click any call to **zoom in** and read
-     the full prompt, the raw response, and the parsed `###` sections;
+     the full prompt, the raw response, the parsed `###` sections, and any tool steps;
+    - the **Files** tab — browse every file in the workspace (including what workers wrote);
    - the **Artifact** tab — the current artifact (syntax-highlighted for code), with an
      **Approve** button once the run finishes.
 4. **Steer** anytime — send the manager a message (it reads the ledger + your chat), or
@@ -137,11 +161,14 @@ and the manager will read from the ledger.
 
 ```bash
 .venv\Scripts\python tests\test_loop.py        # headless loop, mock provider (3 profiles)
+.venv\Scripts\python tests\test_tools.py       # sandboxed file tools: confinement, caps, parsing
+.venv\Scripts\python tests\test_tool_loop.py   # end-to-end tool loop (worker writes a file via a tool call)
 .venv\Scripts\python tests\test_tui.py         # TUI mounts + live views update (Textual pilot)
 .venv\Scripts\python tests\test_steering.py    # stop / force-next / pause drive the loop
-.venv\Scripts\python tests\test_web.py         # web backend: REST + WebSocket (mock compat)
+.venv\Scripts\python tests\test_web.py         # web backend: REST + WebSocket + file browser (mock compat)
 .venv\Scripts\python tests\test_compat_http.py # compat provider vs a local OpenAI server
 .venv\Scripts\python tests\live_e2e.py         # full live E2E: web server + real HTTP loop
+node tests\test_frontend.mjs                   # frontend rendering (md, render, api method selection)
 ```
 
 ## Project layout
@@ -153,7 +180,8 @@ gvs_tui/
   ledger.py     workspace files, transcript, section/task parsing, manager chat, saved runs
   profiles.py   pluggable domain profiles
   verifier.py   optional ground-truth verifier hooks
-  loop.py       the manager/worker orchestration loop + Control (steering)
+  tools.py      sandboxed file tools (ls/read/write/append) + JSON tool-call protocol
+  loop.py       the manager/worker orchestration loop + tool loop + Control (steering)
   app.py        the Textual TUI
   cli.py        command-line entry point (--web launches the GUI)
   web/

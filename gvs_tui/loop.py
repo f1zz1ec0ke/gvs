@@ -24,6 +24,7 @@ import queue
 import threading
 
 from . import ledger
+from . import tools
 from .chat import chat as chat_fn
 
 
@@ -112,7 +113,8 @@ def _manage_prompt(profile):
         "real progress, do NOT keep refining the same idea. Switch to a DIFFERENT approach "
         "from the notes, or ask for a new one. You have many rounds -- use them to try "
         "distinct approaches, not to polish a stuck one.\n"
-        "Respond with EXACTLY these sections:\n"
+        + tools.READ_ONLY_PROTOCOL
+        + "Respond with EXACTLY these sections:\n"
         "### STATUS\n<done|continue>\n"
         "### NEXT\n<exact text of the ONE task to do next; omit if done>\n"
         "### TASKS\n<curated list, one per line, each '- [done] ...' or '- [todo] ...'>\n"
@@ -131,32 +133,34 @@ def _worker_prompt(profile, goal):
     )
     if profile.kind == "code":
         fence = profile.code_fence or "python"
-        out_fmt = (
-            f"### CODE\n```{fence}\n<the FULL updated self-contained program>\n```\n"
-            + notes_fmt +
-            "### NEXT\n<bullet list of remaining steps, or 'none'>\n"
-            "### STATUS\n<solved|continue>"
-        )
+        deliverable = (f"Write the FULL updated self-contained program to "
+                       f"'{profile.artifact_file}' using write_file.")
+        fallback = (f"If you cannot use the file tools, put the full program in a ### CODE "
+                    f"section instead (a ```{fence} fence).")
     else:
-        out_fmt = (
-            "### ANSWER\n<the COMPLETE deliverable for the task, written out in full -- the "
-            "actual content, not a summary of it and not a description of files. This section "
-            "IS the artifact: whatever is not written here does not exist.>\n"
-            + notes_fmt +
-            "### NEXT\n<bullet list of remaining steps, or 'none'>\n"
-            "### STATUS\n<solved|continue>"
-        )
+        deliverable = (f"Write the COMPLETE deliverable to '{profile.artifact_file}' using "
+                       f"write_file -- this file IS the artifact.")
+        fallback = ("If you cannot use the file tools, put the full deliverable in an "
+                    "### ANSWER section instead.")
+    final_fmt = (
+        "### STATUS\n<solved|continue>\n"
+        "### NEXT\n<bullet list of remaining steps, or 'none'>\n"
+        + notes_fmt
+    )
     return (
         f"You are a WORKER subagent, {profile.solver_system} "
         + (profile.worker_extra + " " if profile.worker_extra else "")
-        + "You have NO filesystem, tools, or file access: you cannot create, write, read, "
-        "dispatch to, or reference files at any path (no /shared/..., no '.md' files, no "
-        "'I wrote X.md', no 'dispatched a worker'). Do not invent file paths or claim to have "
-        "written or created files -- your only output is the text below, and the deliverable "
-        "goes in the ANSWER (or CODE) section. Build on the current work and notes where "
-        "useful -- but if your task is to try a different approach, produce a FRESH "
-        f"deliverable for that approach instead of patching the stuck one. {goal}\n"
-        f"Respond with EXACTLY these sections:\n{out_fmt}"
+        + "You have a shared workspace and FILE TOOLS. Use them to ACTUALLY create and edit "
+        "files -- do not merely describe files you 'wrote'. " + deliverable
+        + " You may also create other files (research notes, drafts) as needed, and you "
+        "should rewrite 'notes.md' with your findings.\n"
+        + tools.TOOL_PROTOCOL
+        + "Build on the current work and notes where useful -- but if your task is to try a "
+        "different approach, produce a FRESH deliverable for that approach instead of "
+        f"patching the stuck one. {goal}\n"
+        + fallback + "\n"
+        "When you are done, respond with EXACTLY these sections and NO tool block:\n"
+        + final_fmt
     )
 
 
@@ -227,6 +231,44 @@ def run_loop(task_text, profile, model,
                         "attempts": meta.get("attempts")})
         return resp
 
+    def _short_args(args):
+        if not args:
+            return ""
+        parts = []
+        for k, v in args.items():
+            if k == "content" and isinstance(v, str):
+                v = f"<{len(v)} chars>"
+            parts.append(f"{k}={v}")
+        return ", ".join(parts)
+
+    def chat_tools(role, messages, temperature, read_only=False, max_calls=None):
+        """Run a tool loop: call the model, execute any tool call (confined to ``ws``),
+        feed the result back, and repeat until the model gives a final (non-tool)
+        answer or the call cap is hit. Returns ``(final_text, tool_log)``.
+
+        Each model call is still recorded in the transcript and emitted as a ``call``
+        event, so every tool step is auditable and visible live in the GUI.
+        """
+        max_calls = max_calls or tools.MAX_TOOL_CALLS
+        msgs = list(messages)
+        tool_log = []
+        resp = ""
+        for _step in range(max_calls + 1):
+            resp = chat(role, msgs, temperature)
+            call = tools.parse_tool_block(resp)
+            if call is None:
+                break  # final answer (no tool block)
+            result = tools.run_tool(call["name"], call["args"], ws, read_only=read_only)
+            tool_log.append({"name": call["name"], "args": call["args"], "result": result})
+            say(f"    [tool:{role}] {call['name']}({_short_args(call['args'])}) -> "
+                f"{result.splitlines()[0][:90]}")
+            msgs.append({"role": "assistant", "content": resp})
+            msgs.append({"role": "user", "content":
+                        f"TOOL RESULT for {call['name']}:\n{result}\n\n"
+                        "Continue. If you are finished, give your final sections now "
+                        "(with NO tool block)."})
+        return resp, tool_log
+
     status_out = {"ws": ws, "model": model, "profile": profile.name}
 
     stopped = False
@@ -260,7 +302,8 @@ def run_loop(task_text, profile, model,
             prev_desc = next_desc
             iters += 1
             task = {"id": iters, "desc": next_desc, "status": "in_progress", "result": ""}
-            wstatus, nexts, summary, wrote = _worker(task_text, profile, ws, task, chat, say, last_meta)
+            wstatus, nexts, summary, wrote = _worker(task_text, profile, ws, task, chat, say, last_meta,
+                                                    chat_tools=chat_tools)
             events("worker", {"task_id": iters, "task": next_desc, "status": wstatus,
                               "wrote": wrote, "summary": summary})
             res = None
@@ -272,7 +315,8 @@ def run_loop(task_text, profile, model,
                     say(f"    [verify] {res['passed']}/{res['total']} tests passed")
                     events("verify", res)
             status, next_desc, tasks, update = _primary_manage(
-                task_text, profile, ws, tasks, nexts, summary, chat, say, max_tasks)
+                task_text, profile, ws, tasks, nexts, summary, chat, say, max_tasks,
+                chat_tools=chat_tools)
             events("manage", {"status": status, "next": next_desc, "update": update,
                               "tasks": tasks, "iter": iters})
             if res and res.get("ran") and res["passed"] < res["total"] and status == "done":
@@ -288,7 +332,7 @@ def run_loop(task_text, profile, model,
                 say("    [finalize] skipped (manager marked done)")
             else:
                 _worker(task_text, profile, ws, {"id": 0, "desc": "finalize"}, chat, say,
-                        last_meta, finalize=True)
+                        last_meta, finalize=True, chat_tools=chat_tools)
                 events("finalize", {})
     except _Stopped:
         stopped = True
@@ -353,23 +397,31 @@ def _ideation_worker(task_text, profile, ws, chat, say):
 
 
 def _primary_manage(task_text, profile, ws, tasks, proposals, last_summary, chat, say,
-                    max_tasks):
+                    max_tasks, chat_tools=None):
     cur = ledger.read(ws, profile.artifact_file).strip()
     task_lines = "\n".join(
         f"- [{'done' if t['status'] == 'done' else 'todo'}] {t['desc']}" for t in tasks
     ) or "(none)"
     prop_lines = "\n".join(f"- {p}" for p in proposals) or "(none)"
     label = "SOLUTION" if profile.kind == "code" else "ANSWER"
-    reply = chat("primary_manage", [
+    user_msg = (
+        f"TASK:\n{task_text}\n\nCURRENT {label} ({profile.artifact_file}):\n"
+        f"{cur or '(none yet)'}\n\n"
+        f"NOTES:\n{ledger.read(ws, 'notes.md')}\n\n"
+        f"WORKSPACE FILES:\n{tools.file_listing(ws)}\n\n"
+        f"CURRENT TASK LIST:\n{task_lines}\n\n"
+        f"LATEST WORKER RESULT: {last_summary}\n\n"
+        f"PROPOSED NEW STEPS:\n{prop_lines}" + _chat_block(ws)
+    )
+    messages = [
         {"role": "system", "content": _manage_prompt(profile)},
-        {"role": "user", "content": (
-            f"TASK:\n{task_text}\n\nCURRENT {label}:\n{cur or '(none yet)'}\n\n"
-            f"NOTES:\n{ledger.read(ws, 'notes.md')}\n\n"
-            f"CURRENT TASK LIST:\n{task_lines}\n\n"
-            f"LATEST WORKER RESULT: {last_summary}\n\n"
-            f"PROPOSED NEW STEPS:\n{prop_lines}" + _chat_block(ws)
-        )},
-    ], profile.temps.get("manage", 0.2))
+        {"role": "user", "content": user_msg},
+    ]
+    if chat_tools is not None:
+        reply, _tool_log = chat_tools("primary_manage", messages,
+                                      profile.temps.get("manage", 0.2), read_only=True)
+    else:
+        reply = chat("primary_manage", messages, profile.temps.get("manage", 0.2))
     sec = ledger.sections(reply)
     update = sec.get("UPDATE", "").strip()
     curated = ledger.parse_tasks(sec.get("TASKS", ""), max_tasks) or tasks
@@ -404,40 +456,59 @@ def _summarize_cutoff(ws, profile, reply, task_desc, chat):
     return ledger.strip_think(s).strip() or "(the cut-off attempt could not be summarized)"
 
 
-def _worker(task_text, profile, ws, task, chat, say, last_meta, finalize=False):
+def _worker(task_text, profile, ws, task, chat, say, last_meta, finalize=False, chat_tools=None):
     cur = ledger.read(ws, profile.artifact_file)
+    before_notes = ledger.read(ws, "notes.md")
     goal = ("Produce the DEFINITIVE final artifact now, using all notes and current work."
             if finalize else f"Complete this task: {task['desc']}")
     sys = _worker_prompt(profile, goal)
-    reply = chat("finalize" if finalize else f"worker:{task['id']}", [
+    role = "finalize" if finalize else f"worker:{task['id']}"
+    user_msg = (
+        f"TASK:\n{task_text}\n\nPLAN:\n{ledger.read(ws, 'plan.md')}\n\n"
+        f"NOTES:\n{ledger.read(ws, 'notes.md')}\n\n"
+        f"CURRENT WORK ({profile.artifact_file}):\n{cur or '(none yet)'}\n\n"
+        f"WORKSPACE FILES:\n{tools.file_listing(ws)}\n\n"
+        f"YOUR TASK: {goal}\n"
+        f"Write your final deliverable to '{profile.artifact_file}' using write_file."
+    )
+    messages = [
         {"role": "system", "content": sys},
-        {"role": "user", "content": (
-            f"TASK:\n{task_text}\n\nPLAN:\n{ledger.read(ws, 'plan.md')}\n\n"
-            f"NOTES:\n{ledger.read(ws, 'notes.md')}\n\n"
-            f"CURRENT WORK:\n{cur or '(none yet)'}\n\n"
-            f"YOUR TASK: {goal}"
-        )},
-    ], profile.temps.get("worker", 0.2))
-    sec = ledger.sections(reply)
-    wrote = False
-    if profile.kind == "code":
-        fence = profile.code_fence or "python"
-        code = (ledger.extract_fenced(sec.get("CODE", ""), fence)
-                or ledger.extract_fenced(reply, fence))
-        if code:
-            ledger.write(ws, profile.artifact_file, code)
-            wrote = True
+        {"role": "user", "content": user_msg},
+    ]
+    if chat_tools is not None:
+        reply, tool_log = chat_tools(role, messages, profile.temps.get("worker", 0.2))
     else:
-        ans = sec.get("ANSWER", "").strip()
-        if not ans and profile.answer_marker and re.search(profile.answer_marker, reply, re.I) \
-                and len(reply) < ledger.MAX_ANSWER_CHARS:
-            ans = ledger.strip_think(reply).strip()
-        if ans and (not profile.answer_marker or re.search(profile.answer_marker, ans, re.I)
-                    or not ledger.read(ws, profile.artifact_file).strip()):
-            ledger.write(ws, profile.artifact_file, ans)
-            wrote = True
-    if sec.get("NOTES") and last_meta.get("finish_reason") != "length":
+        reply, tool_log = chat(role, messages, profile.temps.get("worker", 0.2)), []
+    sec = ledger.sections(reply)
+
+    # The deliverable is a real file now: did the artifact change this turn?
+    after = ledger.read(ws, profile.artifact_file)
+    wrote = after.strip() != cur.strip()
+
+    # Fallback for models that don't use the file tools: write the section to disk.
+    if not wrote:
+        if profile.kind == "code":
+            fence = profile.code_fence or "python"
+            code = (ledger.extract_fenced(sec.get("CODE", ""), fence)
+                    or ledger.extract_fenced(reply, fence))
+            if code:
+                ledger.write(ws, profile.artifact_file, code)
+                wrote = True
+        else:
+            ans = sec.get("ANSWER", "").strip()
+            if not ans and profile.answer_marker and re.search(profile.answer_marker, reply, re.I) \
+                    and len(reply) < ledger.MAX_ANSWER_CHARS:
+                ans = ledger.strip_think(reply).strip()
+            if ans and (not profile.answer_marker or re.search(profile.answer_marker, ans, re.I)
+                       or not ledger.read(ws, profile.artifact_file).strip()):
+                ledger.write(ws, profile.artifact_file, ans)
+                wrote = True
+
+    # Notes: if the worker didn't update notes.md itself, fall back to ### NOTES.
+    if (ledger.read(ws, "notes.md").strip() == before_notes.strip()
+            and sec.get("NOTES") and last_meta.get("finish_reason") != "length"):
         ledger.write(ws, "notes.md", sec["NOTES"].strip()[:ledger.MAX_PLAN_CHARS * 2] + "\n")
+
     nexts = [b for b in ledger.bullets(sec.get("NEXT", "")) if b.lower() != "none"]
     status = sec.get("STATUS", "continue").strip().lower()
     if last_meta.get("finish_reason") == "length" and not finalize:
@@ -448,6 +519,8 @@ def _worker(task_text, profile, ws, task, chat, say, last_meta, finalize=False):
                    f"next. Summary of its partial work: {digest[:500]}")
         say(f"    [worker] task {task['id']} -> CUT OFF at token limit; summarized, told manager")
         return "continue", nexts, summary, wrote
-    summary = f"worker reported '{status}' on: {task['desc'][:80]}. " + (sec.get("NOTES", "")[:200])
-    say(f"    [worker] task {task['id']} -> {status}, +{len(nexts)} next steps")
+    tool_note = f" [tools: {', '.join(t['name'] for t in tool_log)}]" if tool_log else ""
+    summary = f"worker reported '{status}' on: {task['desc'][:80]}. " \
+              + (sec.get("NOTES", "")[:200]) + tool_note
+    say(f"    [worker] task {task['id']} -> {status}, +{len(nexts)} next steps{tool_note}")
     return status, nexts, summary, wrote
