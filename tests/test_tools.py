@@ -92,6 +92,19 @@ def main():
     p = tools.parse_tool_block('```tool\n{"name": "read_file", "args": {"path": "notes.md"}}\n```')
     check("args captured", p and p["args"].get("path") == "notes.md")
 
+    # Tolerant parsing: some models close the block with XML tags instead of a
+    # fence, and may drop the final '}'. Both must still be recovered.
+    payload = '{"name": "write_file", "args": {"path": "out/index.html", "content": "<div>hi</div>"}}'
+    p = tools.parse_tool_block('```tool\n' + payload + '\n</invoke>')
+    check("trailing </invoke> recovered", p and p["name"] == "write_file"
+          and p["args"]["content"] == "<div>hi</div>")
+    p = tools.parse_tool_block('```tool\n' + payload[:-1] + '\n</parameter>\n</function>\n')
+    check("trailing XML tags + dropped final brace recovered",
+          p and p["name"] == "write_file" and p["args"]["content"] == "<div>hi</div>")
+    p = tools.parse_tool_block('```tool\n' + payload + '\n```')
+    check("HTML angle brackets fine inside JSON content",
+          p and p["args"]["content"] == "<div>hi</div>")
+
     print("web tools (search / fetch)")
     class FakeSP:
         def search(self, q):

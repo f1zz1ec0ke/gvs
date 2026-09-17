@@ -211,8 +211,35 @@ def run_tool(name, args, ws, read_only=False, web=False, search_provider=None):
 
 # --- tool-call parsing -------------------------------------------------------
 
-_TOOL_FENCE = re.compile(r"```tool[ \t]*\n([\s\S]*?)```")
-_TOOLCALL_LINE = re.compile(r"^\s*TOOLCALL:\s*(\{.*\})\s*$", re.M)
+_TOOL_FENCE = re.compile(r"```tool[ \t]*\n")
+_TOOLCALL_LINE = re.compile(r"^\s*TOOLCALL:\s*", re.M)
+# Trailing XML tool-call tags some models append instead of a closing fence
+# (e.g. "</parameter>\n</function>" or "</invoke>"). Whitespace between tags allowed.
+_TRAILING_TAGS = re.compile(r"\s*(?:</?[A-Za-z_][\w.-]*[^>]*>\s*)+\Z", re.S)
+
+
+def _first_json_object(text):
+    """Parse the first JSON object in ``text`` with a tolerant decoder.
+
+    Ignores trailing garbage (stray XML tags, the closing fence, prose) and
+    recovers a dropped final ``}`` (some models close the block with an XML tag
+    and omit the last brace). Returns a ``dict`` or ``None``.
+    """
+    brace = text.find("{")
+    if brace == -1:
+        return None
+    cand = text[brace:]
+    # light repairs: as-is, with trailing XML tags stripped, and with 1-3 extra '}'
+    bases = [cand, _TRAILING_TAGS.sub("", cand).rstrip()]
+    for base in bases:
+        for k in range(4):
+            try:
+                obj, _end = json.JSONDecoder().raw_decode(base + "}" * k)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(obj, dict):
+                return obj
+    return None
 
 
 def parse_tool_block(text):
@@ -220,23 +247,22 @@ def parse_tool_block(text):
 
     Returns ``{"name": str, "args": dict}`` or ``None`` if the response has no
     valid tool call. Accepts a fenced ``tool`` block or a ``TOOLCALL: {...}``
-    line.
+    line. The JSON object is decoded tolerantly: it ignores trailing garbage
+    (e.g. stray ``</parameter>``/``</invoke>`` tags some models emit instead of a
+    closing fence) and recovers a dropped final ``}``.
     """
     if not text:
         return None
     m = _TOOL_FENCE.search(text)
     if m:
-        payload = m.group(1)
+        start = m.end()
     else:
         m2 = _TOOLCALL_LINE.search(text)
         if not m2:
             return None
-        payload = m2.group(1)
-    try:
-        obj = json.loads(payload.strip())
-    except (json.JSONDecodeError, ValueError):
-        return None
-    if not isinstance(obj, dict):
+        start = m2.end()
+    obj = _first_json_object(text[start:])
+    if obj is None:
         return None
     name = obj.get("name")
     args = obj.get("args", {})
@@ -257,8 +283,9 @@ object, no other text:
 {"name": "read_file", "args": {"path": "notes.md"}}
 ```
 Available: {"name":"ls","args":{}}  and  {"name":"read_file","args":{"path":"..."}}.
-Use them to inspect the files a worker produced before you decide. When you are done,
-respond with your final sections and NO tool block.
+Close the block with a ``` fence (no XML tags such as </parameter> or </invoke>). Use them
+to inspect the files a worker produced before you decide. When you are done, respond with
+your final sections and NO tool block.
 """
 
 TOOL_PROTOCOL = """
@@ -277,6 +304,9 @@ Available tools:
 
 Rules:
 - One tool call per response. Paths are relative to the workspace (no leading "/", no "..").
+- The block is EXACTLY one JSON object between the opening ```tool fence and a closing ```
+  fence. Close it with a ``` fence -- do NOT emit XML tags (no </parameter>, </function>, or
+  </invoke>), and do not omit the final closing brace of the JSON object.
 - ACTUALLY create the files with write_file/append_file -- do not merely describe files you
   "wrote". You may create several files.
 - When you are finished and no more tool calls are needed, respond with your final sections
@@ -285,7 +315,8 @@ Rules:
 
 WEB_PROTOCOL = """
 You also have WEB TOOLS for research. To use one, your ENTIRE response must be a single
-fenced code block tagged "tool" with one JSON object, no other text:
+fenced code block tagged "tool" with one JSON object, no other text. Close the block with a
+``` fence (no XML tags such as </parameter> or </invoke>):
 ```tool
 {"name": "search", "args": {"query": "python asyncio tutorial"}}
 ```
