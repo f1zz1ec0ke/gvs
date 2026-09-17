@@ -113,6 +113,11 @@ def _manage_prompt(profile):
         "real progress, do NOT keep refining the same idea. Switch to a DIFFERENT approach "
         "from the notes, or ask for a new one. You have many rounds -- use them to try "
         "distinct approaches, not to polish a stuck one.\n"
+        "- If the task needs EXTERNAL or CURRENT information (facts, documentation, recent "
+        "events, specs, versions, prices, news) that a worker cannot reliably know, prefix "
+        "your NEXT task with '[research]' and state exactly what to find out, e.g. "
+        "'[research] Find the current stable version of X and what changed in its API'. A "
+        "dedicated researcher with web search will gather it into the shared workspace.\n"
         + tools.READ_ONLY_PROTOCOL
         + "Respond with EXACTLY these sections:\n"
         "### STATUS\n<done|continue>\n"
@@ -152,8 +157,9 @@ def _worker_prompt(profile, goal):
         + (profile.worker_extra + " " if profile.worker_extra else "")
         + "You have a shared workspace and FILE TOOLS. Use them to ACTUALLY create and edit "
         "files -- do not merely describe files you 'wrote'. " + deliverable
-        + " You may also create other files (research notes, drafts) as needed, and you "
-        "should rewrite 'notes.md' with your findings.\n"
+        + " You may also create other files (drafts) as needed, and you should rewrite "
+        "'notes.md' with your findings. If a 'research.md' file exists (from a researcher), "
+        "read it with read_file and use its findings.\n"
         + tools.TOOL_PROTOCOL
         + "Build on the current work and notes where useful -- but if your task is to try a "
         "different approach, produce a FRESH deliverable for that approach instead of "
@@ -164,12 +170,39 @@ def _worker_prompt(profile, goal):
     )
 
 
+def _researcher_prompt(profile, goal):
+    notes_fmt = (
+        "### NOTES\n<the COMPLETE notes file, rewritten. Fold the key research findings "
+        "into it (with source URLs) so the workers see the essence. Keep it under ~800 words.>\n"
+    )
+    return (
+        f"You are a RESEARCHER subagent, {profile.solver_system} "
+        + (profile.worker_extra + " " if profile.worker_extra else "")
+        + "You have FILE TOOLS and WEB TOOLS (search + fetch). Your job is to gather reliable, "
+        "current information for the task and put it in the shared workspace so other workers "
+        "can use it. Use search to find sources, fetch the most relevant ones to read the "
+        "actual content, and write your findings to 'research.md' (create it with write_file; "
+        "you may also create research/<topic>.md for detailed notes). Cite sources by URL and "
+        "note anything you could NOT verify. If the search tool reports that no provider is "
+        "configured, do NOT retry it -- use your own knowledge and flag that you could not "
+        "verify externally. When done, rewrite 'notes.md' with a concise "
+        f"summary of the key findings. {goal}\n"
+        + tools.TOOL_PROTOCOL
+        + tools.WEB_PROTOCOL
+        + "When you are done, respond with EXACTLY these sections and NO tool block:\n"
+        "### STATUS\n<solved|continue>\n"
+        "### NEXT\n<bullet list of remaining steps, or 'none'>\n"
+        + notes_fmt
+    )
+
+
 # --- main entry point --------------------------------------------------------
 
 def run_loop(task_text, profile, model,
              ws_root=None, max_iters=None, max_tasks=None,
              verifier=None, tests=None,
-             control=None, events=None, log=None, fresh=True):
+             control=None, events=None, log=None, fresh=True,
+             search=None):
     """Run the full orchestration loop for one task. Returns a status dict.
 
     ``fresh`` starts a clean ledger. When False the existing ledger is kept and
@@ -184,7 +217,13 @@ def run_loop(task_text, profile, model,
     max_tasks = max_tasks or int(os.environ.get("GVS_MAX_TASKS", "12"))
 
     def say(msg):
-        log(msg)
+        try:
+            log(msg)
+        except Exception:  # noqa: BLE001 - a logger that can't encode msg must not kill the run
+            try:
+                log(msg.encode("ascii", "replace").decode("ascii"))
+            except Exception:  # noqa: BLE001
+                pass
         events("log", {"line": msg})
 
     ws = os.path.join(ws_root, ledger.slug(task_text))
@@ -241,13 +280,16 @@ def run_loop(task_text, profile, model,
             parts.append(f"{k}={v}")
         return ", ".join(parts)
 
-    def chat_tools(role, messages, temperature, read_only=False, max_calls=None):
+    def chat_tools(role, messages, temperature, read_only=False, web=False,
+                   search_provider=None, max_calls=None):
         """Run a tool loop: call the model, execute any tool call (confined to ``ws``),
         feed the result back, and repeat until the model gives a final (non-tool)
         answer or the call cap is hit. Returns ``(final_text, tool_log)``.
 
-        Each model call is still recorded in the transcript and emitted as a ``call``
-        event, so every tool step is auditable and visible live in the GUI.
+        ``web`` enables the search/fetch tools (researcher only); ``search_provider``
+        is the configured SearchProvider. Each model call is still recorded in the
+        transcript and emitted as a ``call`` event, so every tool step is auditable
+        and visible live in the GUI.
         """
         max_calls = max_calls or tools.MAX_TOOL_CALLS
         msgs = list(messages)
@@ -258,7 +300,8 @@ def run_loop(task_text, profile, model,
             call = tools.parse_tool_block(resp)
             if call is None:
                 break  # final answer (no tool block)
-            result = tools.run_tool(call["name"], call["args"], ws, read_only=read_only)
+            result = tools.run_tool(call["name"], call["args"], ws, read_only=read_only,
+                                    web=web, search_provider=search_provider)
             tool_log.append({"name": call["name"], "args": call["args"], "result": result})
             say(f"    [tool:{role}] {call['name']}({_short_args(call['args'])}) -> "
                 f"{result.splitlines()[0][:90]}")
@@ -301,11 +344,19 @@ def run_loop(task_text, profile, model,
                 break
             prev_desc = next_desc
             iters += 1
-            task = {"id": iters, "desc": next_desc, "status": "in_progress", "result": ""}
-            wstatus, nexts, summary, wrote = _worker(task_text, profile, ws, task, chat, say, last_meta,
-                                                    chat_tools=chat_tools)
-            events("worker", {"task_id": iters, "task": next_desc, "status": wstatus,
-                              "wrote": wrote, "summary": summary})
+            is_research = next_desc.strip().lower().startswith("[research]")
+            task_desc = re.sub(r"^\[research\]\s*", "", next_desc, flags=re.I).strip() or next_desc
+            task = {"id": iters, "desc": task_desc, "status": "in_progress", "result": ""}
+            if is_research:
+                wstatus, nexts, summary, _wrote = _researcher(
+                    task_text, profile, ws, task, chat, say, last_meta, chat_tools, search)
+                events("researcher", {"task_id": iters, "task": next_desc, "status": wstatus,
+                                      "summary": summary})
+            else:
+                wstatus, nexts, summary, wrote = _worker(
+                    task_text, profile, ws, task, chat, say, last_meta, chat_tools=chat_tools)
+                events("worker", {"task_id": iters, "task": next_desc, "status": wstatus,
+                                  "wrote": wrote, "summary": summary})
             res = None
             if verifier is not None and wrote:
                 res = verifier(ws, profile, tests)
@@ -524,3 +575,49 @@ def _worker(task_text, profile, ws, task, chat, say, last_meta, finalize=False, 
               + (sec.get("NOTES", "")[:200]) + tool_note
     say(f"    [worker] task {task['id']} -> {status}, +{len(nexts)} next steps{tool_note}")
     return status, nexts, summary, wrote
+
+
+def _researcher(task_text, profile, ws, task, chat, say, last_meta, chat_tools, search):
+    """A dedicated researcher: gathers external information with the web tools and
+    writes it to the shared workspace (research.md + notes.md) for workers to use.
+
+    Returns ``(status, nexts, summary, wrote)``; ``wrote`` is always False because the
+    researcher does not produce the profile's artifact (so the verifier is not run).
+    """
+    goal = f"Research this task and gather the relevant facts and sources: {task['desc']}"
+    sys = _researcher_prompt(profile, goal)
+    role = f"researcher:{task['id']}"
+    before_notes = ledger.read(ws, "notes.md")
+    user_msg = (
+        f"TASK:\n{task_text}\n\nPLAN:\n{ledger.read(ws, 'plan.md')}\n\n"
+        f"NOTES:\n{ledger.read(ws, 'notes.md')}\n\n"
+        f"EXISTING RESEARCH (research.md):\n{ledger.read(ws, 'research.md') or '(none yet)'}\n\n"
+        f"YOUR TASK: {goal}\n"
+        "Write your findings to 'research.md' (create or extend it) and update 'notes.md' "
+        "with a concise summary of the key findings."
+    )
+    messages = [
+        {"role": "system", "content": sys},
+        {"role": "user", "content": user_msg},
+    ]
+    reply, tool_log = chat_tools(role, messages, profile.temps.get("worker", 0.2),
+                                 web=True, search_provider=search)
+    sec = ledger.sections(reply)
+    # Notes: if the researcher didn't update notes.md itself, fall back to ### NOTES.
+    if (ledger.read(ws, "notes.md").strip() == before_notes.strip()
+            and sec.get("NOTES") and last_meta.get("finish_reason") != "length"):
+        ledger.write(ws, "notes.md", sec["NOTES"].strip()[:ledger.MAX_PLAN_CHARS * 2] + "\n")
+    # Fallback: if research.md wasn't written via a tool, write the findings there.
+    # Strip any tool block so a raw tool call is never written to the file.
+    if not ledger.read(ws, "research.md").strip():
+        findings = (sec.get("NOTES") or ledger.strip_think(reply) or reply).strip()
+        findings = re.sub(r"```tool[\s\S]*?```", "", findings).strip()
+        if findings:
+            ledger.write(ws, "research.md", findings[:ledger.MAX_PLAN_CHARS * 2] + "\n")
+    nexts = [b for b in ledger.bullets(sec.get("NEXT", "")) if b.lower() != "none"]
+    status = sec.get("STATUS", "continue").strip().lower()
+    tool_note = f" [tools: {', '.join(t['name'] for t in tool_log)}]" if tool_log else ""
+    summary = f"researcher reported '{status}' on: {task['desc'][:80]}. " \
+              + (sec.get("NOTES", "")[:200]) + tool_note
+    say(f"    [researcher] task {task['id']} -> {status}{tool_note}")
+    return status, nexts, summary, False

@@ -324,9 +324,33 @@ function openSettings() {
   $("#cfg-max_iters").value = c.max_iters ?? "";
   $("#cfg-profile").value = c.profile || "general";
   $("#cfg-tests").value = c.tests || "";
+  $("#cfg-search_provider").value = c.search_provider || "";
+  $("#cfg-search_api_key").value = c.search_api_key || "";
+  $("#cfg-search_url").value = c.search_url || "";
+  $("#cfg-search_headers").value = (c.search_headers && Object.keys(c.search_headers).length)
+    ? JSON.stringify(c.search_headers) : "";
+  $("#cfg-search_mapping").value = (c.search_mapping && Object.keys(c.search_mapping).length)
+    ? JSON.stringify(c.search_mapping) : "";
+  $("#cfg-search_command").value = c.search_command || "";
+  syncSearchFields();
   els.cfgModels.hidden = true;
   els.connResult.textContent = "";
   els.modalSettings.hidden = false;
+}
+
+function syncSearchFields() {
+  const p = $("#cfg-search_provider").value;
+  $("#field-search_api_key").hidden = p !== "brave";
+  $("#field-search_url").hidden = p !== "http";
+  $("#field-search_headers").hidden = p !== "http";
+  $("#field-search_mapping").hidden = p !== "http";
+  $("#field-search_command").hidden = p !== "command";
+}
+
+function parseJsonField(v) {
+  v = (v || "").trim();
+  if (!v) return {};
+  try { return JSON.parse(v); } catch { return {}; }
 }
 
 function readCfgForm() {
@@ -340,6 +364,12 @@ function readCfgForm() {
     max_iters: Number($("#cfg-max_iters").value || 10),
     profile: $("#cfg-profile").value,
     tests: $("#cfg-tests").value,
+    search_provider: $("#cfg-search_provider").value,
+    search_api_key: $("#cfg-search_api_key").value,
+    search_url: $("#cfg-search_url").value.trim(),
+    search_headers: parseJsonField($("#cfg-search_headers").value),
+    search_mapping: parseJsonField($("#cfg-search_mapping").value),
+    search_command: $("#cfg-search_command").value.trim(),
   };
 }
 
@@ -413,6 +443,7 @@ $("#settings-form").addEventListener("submit", async (e) => {
 $("#btn-fetch-models").addEventListener("click", () => testConnection(true));
 $("#btn-test-conn").addEventListener("click", () => testConnection(false));
 els.cfgModels.addEventListener("change", () => { $("#cfg-model").value = els.cfgModels.value; });
+$("#cfg-search_provider").addEventListener("change", syncSearchFields);
 
 document.querySelectorAll("[data-close]").forEach((el) =>
   el.addEventListener("click", () => { el.closest(".modal").hidden = true; }));

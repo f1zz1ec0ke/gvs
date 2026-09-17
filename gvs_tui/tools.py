@@ -1,9 +1,13 @@
-"""Sandboxed file tools for the agent roles (B-full).
+"""Sandboxed tools for the agent roles (B-full + researcher).
 
-Every operation is confined to a single workspace directory. There is NO shell,
-NO network, and NO code execution: the only capabilities are ``ls``,
+File tools: every operation is confined to a single workspace directory. There
+is NO shell and NO code execution: the file capabilities are ``ls``,
 ``read_file``, ``write_file`` and ``append_file``, all resolved and checked to
 stay under the workspace root, with size and call caps.
+
+Web tools: ``search`` and ``fetch`` are available ONLY to the researcher role
+(``web=True``). ``fetch`` is http/https-only, size-capped and timed out;
+``search`` goes through a user-configured SearchProvider.
 
 The tool protocol is model-agnostic: a tool call is a fenced ``tool`` block
 holding one JSON object, so it works on any OpenAI-compatible endpoint.
@@ -12,12 +16,16 @@ holding one JSON object, so it works on any OpenAI-compatible endpoint.
 import os
 import re
 import json
+import urllib.request
+import urllib.error
 
 # --- caps --------------------------------------------------------------------
 MAX_WRITE_BYTES = 256 * 1024   # cap on a single write/append payload
 MAX_READ_BYTES = 256 * 1024    # cap on how much read_file returns
 MAX_TOOL_CALLS = 25            # cap on tool calls per role turn
 MAX_LIST_ENTRIES = 200         # cap on ls entries returned
+MAX_FETCH_BYTES = 512 * 1024   # cap on how much fetch returns
+FETCH_TIMEOUT = 30             # seconds for a fetch
 
 
 class ToolError(Exception):
@@ -64,12 +72,15 @@ def file_listing(ws):
 
 # --- tool execution ----------------------------------------------------------
 
-def execute_tool(name, args, ws, read_only=False):
+def execute_tool(name, args, ws, read_only=False, web=False, search_provider=None):
     """Execute one tool call, confined to ``ws``.
 
     Returns a human-readable result string (also used as the tool-result
     message fed back to the model). Raises :class:`ToolError` for a call that
     violates the sandbox; the caller turns that into an error result string.
+
+    ``web`` enables the ``search``/``fetch`` tools (researcher only);
+    ``search_provider`` is the configured SearchProvider for ``search``.
     """
     args = args or {}
     if name == "ls":
@@ -116,13 +127,53 @@ def execute_tool(name, args, ws, read_only=False):
         with open(p, "a", encoding="utf-8", newline="\n") as f:
             f.write(content)
         return f"OK: appended {len(content)} chars to {args.get('path')}"
+    if name == "search":
+        if not web:
+            raise ToolError("search is not available to this role")
+        if search_provider is None:
+            return ("ERROR: no search provider is configured, so you cannot search the web. "
+                    "Do NOT retry search. Rely on your own knowledge for this and note in your "
+                    "findings that you could not verify it externally.")
+        query = args.get("query")
+        if not query or not str(query).strip():
+            raise ToolError("search requires a 'query'")
+        try:
+            results = search_provider.search(str(query).strip())
+        except Exception as e:  # noqa: BLE001 - surfaced to the model
+            return f"ERROR: search failed: {e}"
+        from . import search as _search
+        return _search.format_results(results)
+    if name == "fetch":
+        if not web:
+            raise ToolError("fetch is not available to this role")
+        url = args.get("url")
+        if not url or not str(url).startswith(("http://", "https://")):
+            raise ToolError("fetch requires an http(s) 'url'")
+        try:
+            req = urllib.request.Request(str(url), headers={"User-Agent": "gvs-tui/1.0"})
+            with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT) as r:
+                raw = r.read(MAX_FETCH_BYTES + 1)
+        except urllib.error.HTTPError as e:
+            return f"ERROR: fetch failed ({e.code} {e.reason}) for {url}"
+        except Exception as e:  # noqa: BLE001 - surfaced to the model
+            return f"ERROR: fetch failed for {url}: {e}"
+        truncated = len(raw) > MAX_FETCH_BYTES
+        if truncated:
+            raw = raw[:MAX_FETCH_BYTES]
+        try:
+            text = raw.decode("utf-8", errors="replace")
+        except Exception:
+            text = raw.decode("latin-1", errors="replace")
+        note = "\n[truncated: page is larger than the fetch cap]" if truncated else ""
+        return text + note
     raise ToolError(f"unknown tool {name!r}")
 
 
-def run_tool(name, args, ws, read_only=False):
+def run_tool(name, args, ws, read_only=False, web=False, search_provider=None):
     """Like :func:`execute_tool` but returns an error string instead of raising."""
     try:
-        return execute_tool(name, args, ws, read_only=read_only)
+        return execute_tool(name, args, ws, read_only=read_only, web=web,
+                            search_provider=search_provider)
     except ToolError as e:
         return f"ERROR: {e}"
 
@@ -199,4 +250,18 @@ Rules:
   "wrote". You may create several files.
 - When you are finished and no more tool calls are needed, respond with your final sections
   and NO "tool" block.
+"""
+
+WEB_PROTOCOL = """
+You also have WEB TOOLS for research. To use one, your ENTIRE response must be a single
+fenced code block tagged "tool" with one JSON object, no other text:
+```tool
+{"name": "search", "args": {"query": "python asyncio tutorial"}}
+```
+Available web tools:
+- {"name":"search","args":{"query":"..."}}    web search (returns titled results with URLs + snippets)
+- {"name":"fetch","args":{"url":"https://..."}}  fetch a page and read its text
+Use search to find sources, then fetch the most relevant ones to read the actual content.
+Cite sources by URL in your findings. If a search or fetch fails, try a different query or
+source rather than giving up.
 """

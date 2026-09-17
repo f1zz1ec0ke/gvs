@@ -125,6 +125,37 @@
           <span>Sample tests <em>code profile, one “input =&gt; output” per line</em></span>
           <textarea id="cfg-tests" rows="3" placeholder="hello => hello&#10;3 4 => 7" spellcheck="false"></textarea>
         </label>
+        <div class="search-config">
+          <label class="field">
+            <span>Web search <em>for the researcher role — leave blank to disable</em></span>
+            <select id="cfg-search_provider" class="select">
+              <option value="">(none)</option>
+              <option value="brave">brave — Brave Search API</option>
+              <option value="http">http — any JSON search endpoint</option>
+              <option value="command">command — local script</option>
+            </select>
+          </label>
+          <label class="field" id="field-search_api_key" hidden>
+            <span>Search API key <em>brave</em></span>
+            <input id="cfg-search_api_key" type="password" placeholder="Brave X-Subscription-Token" spellcheck="false">
+          </label>
+          <label class="field" id="field-search_url" hidden>
+            <span>Search URL <em>http — include {query}</em></span>
+            <input id="cfg-search_url" placeholder="https://api.example.com/search?q={query}" spellcheck="false">
+          </label>
+          <label class="field" id="field-search_headers" hidden>
+            <span>Search headers <em>http — JSON, e.g. {"Authorization":"Bearer …"}</em></span>
+            <input id="cfg-search_headers" placeholder='{"Authorization":"Bearer …"}' spellcheck="false">
+          </label>
+          <label class="field" id="field-search_mapping" hidden>
+            <span>Field mapping <em>http — JSON {title,url,snippet}</em></span>
+            <input id="cfg-search_mapping" placeholder='{"title":"title","url":"url","snippet":"snippet"}' spellcheck="false">
+          </label>
+          <label class="field" id="field-search_command" hidden>
+            <span>Search command <em>command — include {query}</em></span>
+            <input id="cfg-search_command" placeholder="my-search-tool --json {query}" spellcheck="false">
+          </label>
+        </div>
         <div class="modal-actions">
           <button type="button" id="btn-test-conn" class="btn">Test connection</button>
           <span id="conn-result" class="small dim"></span>

@@ -44,7 +44,17 @@ generalizes it:
   name, the worker's solver prompt, the artifact file + kind, and an answer marker.
   Built-ins: `code`, `math`, `research`, `general`. Add your own with one `Profile(...)`.
 - **Optional verifier hooks** (`gvs_tui/verifier.py`) — any `verifier(ws, profile, tests)`
-  callable that returns a pass/fail dict. The `code` profile ships a run-the-tests verifier.
+  callable that returns a pass/fail dict. The `code` profile ships a run-the-tests verifier
+  that executes the generated code in a **sandboxed subprocess** (isolated temp dir, per-test
+  timeout + total cap, scrubbed environment with no API keys, best-effort network block).
+- **Dedicated researcher role** (`gvs_tui/loop.py`) — when the manager marks a task with a
+  `[research]` prefix, a fresh **researcher** (instead of a worker) is dispatched. It has the
+  file tools **plus web tools** (`search` + `fetch`) and writes its findings to `research.md`
+  (and `notes.md`) in the shared workspace, where workers can read and use them.
+- **Pluggable web search** (`gvs_tui/search.py`) — the researcher's `search` tool goes through a
+  user-configured `SearchProvider`: **Brave** (API key), **http** (any JSON search endpoint with
+  a URL template + field mapping), or **command** (a local script). Configured in the GUI
+  Settings; no search is configured by default.
 - **Live TUI** (`gvs_tui/app.py`) — paste a task, pick model/profile, watch the ledger,
   task list, transcript, and token usage update in real time, and steer the run.
 - **Live web GUI** (`gvs_tui/web/`) — a build-free single-page app (vanilla JS/CSS) served by
@@ -71,12 +81,19 @@ works on any OpenAI-compatible endpoint.
   "describe" a file it didn't write — the file is real and verifiable.
 - The **manager** gets **read-only** tools (`ls`, `read_file`) plus a live file listing, so it
   can inspect what workers actually produced before deciding the next step.
+- The **researcher** gets the file tools **plus web tools** (`search`, `fetch`) — the only role
+  that can reach the internet. It is dispatched when the manager prefixes a task with
+  `[research]`, and it writes its findings to `research.md` for the workers to use. Workers
+  never get web tools, so ordinary work stays offline and grounded in the workspace.
 - Each tool call is a recorded model call: the **Timeline** shows every tool step (a green
   `🔧` chip with the tool name and args), and the **Files** tab lets you browse everything that
   exists in the workspace.
 - Safety: every path is resolved and checked to stay under the workspace root, writes are
-  size-capped, and there's a cap on tool calls per role turn. The **verifier** remains the only
-  code-execution path (harness-controlled, for ground-truth tests).
+  size-capped, and there's a cap on tool calls per role turn. `fetch` is http/https-only and
+  size-capped. The **verifier** is the only code-execution path, and it runs the generated code
+  in a sandboxed subprocess (isolated temp dir, timeouts, scrubbed environment, best-effort
+  network block) — so even a malicious artifact cannot reach the workspace, the project, or
+  your API keys.
 
 ## Install
 
@@ -163,6 +180,9 @@ and the manager will read from the ledger.
 .venv\Scripts\python tests\test_loop.py        # headless loop, mock provider (3 profiles)
 .venv\Scripts\python tests\test_tools.py       # sandboxed file tools: confinement, caps, parsing
 .venv\Scripts\python tests\test_tool_loop.py   # end-to-end tool loop (worker writes a file via a tool call)
+.venv\Scripts\python tests\test_search.py      # search providers (brave/http/command, mocked)
+.venv\Scripts\python tests\test_researcher.py  # [research] dispatch: researcher searches + writes research.md
+.venv\Scripts\python tests\test_verifier_sandbox.py # sandboxed verifier: isolation, timeout, env scrub
 .venv\Scripts\python tests\test_tui.py         # TUI mounts + live views update (Textual pilot)
 .venv\Scripts\python tests\test_steering.py    # stop / force-next / pause drive the loop
 .venv\Scripts\python tests\test_web.py         # web backend: REST + WebSocket + file browser (mock compat)
@@ -179,9 +199,10 @@ gvs_tui/
                 + config-driven `compat:` OpenAI-compatible endpoint + mock)
   ledger.py     workspace files, transcript, section/task parsing, manager chat, saved runs
   profiles.py   pluggable domain profiles
-  verifier.py   optional ground-truth verifier hooks
-  tools.py      sandboxed file tools (ls/read/write/append) + JSON tool-call protocol
-  loop.py       the manager/worker orchestration loop + tool loop + Control (steering)
+  verifier.py   optional ground-truth verifier hooks (sandboxed subprocess for code)
+  tools.py      sandboxed file tools (ls/read/write/append) + web tools (search/fetch) + protocol
+  search.py     pluggable web search providers (brave / http / command)
+  loop.py       manager/worker/researcher orchestration loop + tool loop + Control (steering)
   app.py        the Textual TUI
   cli.py        command-line entry point (--web launches the GUI)
   web/

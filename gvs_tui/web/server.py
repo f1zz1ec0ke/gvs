@@ -20,6 +20,7 @@ from pydantic import BaseModel
 
 from .. import ledger
 from .. import tools
+from ..search import make_search_provider
 import gvs_tui.chat as chatmod
 from ..chat import set_compat_endpoint, compat_chat_stream, fetch_models
 from ..profiles import PROFILES, get_profile
@@ -31,6 +32,10 @@ STATIC = os.path.join(HERE, "static")
 PROJECT_ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 CONFIG_PATH = os.path.join(PROJECT_ROOT, "config.json")
 WS_ROOT = os.environ.get("GVS_WS_ROOT", os.path.join(PROJECT_ROOT, "runs", "ws"))
+
+# The configured web-search provider for the researcher role (rebuilt on every
+# apply_config). None when no search provider is configured.
+SEARCH_PROVIDER = None
 
 
 # --- config -----------------------------------------------------------------
@@ -45,6 +50,13 @@ class Config(BaseModel):
     profile: str = "general"
     tests: str = ""                    # one "input => output" per line (code profile)
     max_iters: int = 10
+    # --- web search (for the researcher role) ---
+    search_provider: str = ""          # brave | http | command  ("" = no search)
+    search_api_key: str = ""           # for brave (or http auth)
+    search_url: str = ""               # for http: URL template containing {query}
+    search_headers: dict = {}          # for http: request headers (name -> value)
+    search_mapping: dict = {}          # for http: {title,url,snippet} -> field path
+    search_command: str = ""           # for command: command template containing {query}
 
 
 def load_config() -> Config:
@@ -64,9 +76,11 @@ def save_config(cfg: Config):
 
 def apply_config(cfg: Config):
     """Point the compat provider + global knobs at the user's config."""
+    global SEARCH_PROVIDER
     set_compat_endpoint(cfg.base_url, cfg.api_key)
     chatmod.CLOUD_MAX_TOKENS = int(cfg.max_tokens)
     chatmod.CLOUD_TIMEOUT = int(cfg.timeout)
+    SEARCH_PROVIDER = make_search_provider(cfg.model_dump())
 
 
 def parse_tests(raw):
@@ -243,7 +257,8 @@ class RunManager:
                 verifier=verifier, tests=tests,
                 control=self.control,
                 events=self._on_loop_event,
-                log=lambda *a: None, fresh=fresh)
+                log=lambda *a: None, fresh=fresh,
+                search=SEARCH_PROVIDER)
             self.status = status
             self.state_name = "stopped" if status.get("stopped") else "done"
         except Exception as e:  # noqa: BLE001 - surfaced to the client
@@ -275,6 +290,9 @@ class RunManager:
         elif etype == "worker":
             self._broadcast_ledger()
             self.state.hub.post("manager", self._worker_message(payload))
+        elif etype == "researcher":
+            self._broadcast_ledger()
+            self.state.hub.post("manager", self._researcher_message(payload))
         elif etype == "verify":
             self.broadcaster.broadcast({"type": "verify", **payload})
             self.state.hub.post("manager",
@@ -312,6 +330,10 @@ class RunManager:
     def _worker_message(self, p):
         extra = " and wrote the artifact." if p.get("wrote") else ""
         return f"Worker finished task {p['task_id']} ({p['status']}){extra}."
+
+    def _researcher_message(self, p):
+        return (f"Researcher finished task {p['task_id']} ({p['status']}) -- findings are in "
+                "research.md for the workers to use.")
 
     def _done_message(self, p):
         if p.get("has_artifact"):

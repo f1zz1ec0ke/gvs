@@ -92,6 +92,43 @@ def main():
     p = tools.parse_tool_block('```tool\n{"name": "read_file", "args": {"path": "notes.md"}}\n```')
     check("args captured", p and p["args"].get("path") == "notes.md")
 
+    print("web tools (search / fetch)")
+    class FakeSP:
+        def search(self, q):
+            return [{"title": "R1", "url": "https://r1", "snippet": "snip " + q}]
+    sp = FakeSP()
+    r = tools.run_tool("search", {"query": "asyncio"}, ws, web=True, search_provider=sp)
+    check("search returns results", "R1" in r and "https://r1" in r and "snip asyncio" in r)
+    r = tools.run_tool("search", {"query": "x"}, ws, web=False)
+    check("search blocked for non-web role", r.startswith("ERROR"))
+    r = tools.run_tool("search", {"query": "x"}, ws, web=True, search_provider=None)
+    check("search with no provider -> error msg", "no search provider" in r)
+    r = tools.run_tool("search", {}, ws, web=True, search_provider=sp)
+    check("search requires a query", r.startswith("ERROR"))
+
+    import urllib.request as _urlreq
+    orig_urlopen = _urlreq.urlopen
+
+    class _FakeResp:
+        def __init__(self, data):
+            self._d = data
+        def read(self, n=-1):
+            return self._d if n < 0 else self._d[:n]
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+    _urlreq.urlopen = lambda req, timeout=None: _FakeResp(b"hello fetched page")
+    try:
+        r = tools.run_tool("fetch", {"url": "https://example.com"}, ws, web=True)
+        check("fetch returns page text", "hello fetched page" in r)
+        r = tools.run_tool("fetch", {"url": "https://example.com"}, ws, web=False)
+        check("fetch blocked for non-web role", r.startswith("ERROR"))
+        r = tools.run_tool("fetch", {"url": "file:///etc/passwd"}, ws, web=True)
+        check("fetch rejects non-http url", r.startswith("ERROR"))
+    finally:
+        _urlreq.urlopen = orig_urlopen
+
     print()
     if failures:
         print(f"{failures} TOOL TEST(S) FAILED")
