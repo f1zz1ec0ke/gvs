@@ -1,6 +1,6 @@
-# gvs-tui
+# gvs
 
-A **general-purpose harness** (terminal TUI **and** a live web GUI) for
+A **general-purpose harness** with a live web GUI (and a terminal TUI) for
 *ledger-based zero-shot self-orchestration* — the paradigm from the
 [GVS5H / "Gorilla vs 5 Humans"](https://github.com/slee-persis/GVS5H) paper, lifted out of
 benchmarking and made into a tool you point at *any* task.
@@ -83,7 +83,10 @@ workspace directory** (`runs/ws/<slug>`) that the agents can **read and write**.
 a minimal, **sandboxed file toolset** — `ls`, `read_file`, `write_file`, `append_file` —
 confined to that directory (no shell, no network, no code execution), driven by a
 model-agnostic **JSON-in-text tool protocol** (a `tool`-tagged fenced JSON block), so it
-works on any OpenAI-compatible endpoint.
+works on any OpenAI-compatible endpoint. The parser is **tolerant**: it recovers a tool
+call even when a model closes the block with stray XML tags (`</invoke>`,
+`</parameter></function>`) or drops the final JSON brace, instead of silently dropping the
+call.
 
 - A **worker** uses the tools to *actually create* its deliverable — every deliverable file
   goes under `out/` (one file or a whole tree, e.g. a website's `index.html` + `css` + `js`) —
@@ -109,7 +112,7 @@ works on any OpenAI-compatible endpoint.
 ## Install
 
 ```bash
-cd gvs-tui
+cd gvs
 python -m venv .venv
 .venv\Scripts\pip install -e ".[web]"            # Windows
 # .venv/bin/pip install -e ".[web]"             # macOS/Linux
@@ -127,16 +130,20 @@ dialog** (persisted to `config.json`) and works with any OpenAI-compatible serve
 # Demo: mock model, built-in coding task + sample tests. No key needed.
 .venv\Scripts\python -m gvs_tui.cli --mock
 
-# Real model, TUI
-.venv\Scripts\python -m gvs_tui.cli --model openai:gpt-5 --profile code --task "..."
+# Real model, TUI (general mode is the default)
+.venv\Scripts\python -m gvs_tui.cli --model openai:gpt-5 --task "..."
 
 # Task from a file, headless (no TUI), logs to stdout
-.venv\Scripts\python -m gvs_tui.cli --task-file task.md --profile research --headless
+.venv\Scripts\python -m gvs_tui.cli --task-file task.md --headless
 
-# Code profile with your own sample tests (one 'input => output' per line)
-.venv\Scripts\python -m gvs_tui.cli --model ollama:qwen3:35b --profile code \
+# With your own sample tests (one 'input => output' per line): the verifier
+# runs the out/ deliverable against them
+.venv\Scripts\python -m gvs_tui.cli --model ollama:qwen3:35b \
     --tests "3 => 9" --task "Read an int, print its square"
 ```
+
+`--profile` (code/math/research/general) is still available as a power option, but the
+GUI always uses **general** — the deliverable is whatever the task calls for.
 
 Or install the entry point (`pip install -e .`) and call `gvs-tui ...`.
 
@@ -188,7 +195,7 @@ and the manager will read from the ledger.
 ## Tests
 
 ```bash
-.venv\Scripts\python tests\test_loop.py        # headless loop, mock provider (3 profiles)
+.venv\Scripts\python tests\test_loop.py        # headless loop, mock provider (out/ deliverable + notes.log + verifier)
 .venv\Scripts\python tests\test_tools.py       # sandboxed file tools: confinement, caps, parsing
 .venv\Scripts\python tests\test_tool_loop.py   # end-to-end tool loop (worker writes a file via a tool call)
 .venv\Scripts\python tests\test_search.py      # search providers (brave/http/command, mocked)
