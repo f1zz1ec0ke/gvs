@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+.pipcache/
+.uvcache/
+runs/
+tests/_ws/
+*.egg-info/
+dist/
+build/
+
+# local secrets / config — never commit
+.env
+config.json

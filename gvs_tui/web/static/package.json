@@ -1,0 +1,5 @@
+{
+  "name": "gvs-web-static",
+  "private": true,
+  "type": "module"
+}

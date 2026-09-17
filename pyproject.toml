@@ -1,0 +1,32 @@
+[project]
+name = "gvs-tui"
+version = "0.1.0"
+description = "General-purpose TUI harness for ledger-based zero-shot self-orchestration (the GVS5H paradigm)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    # Built against Textual 8.x (TabbedContent/TabPane, call_from_thread,
+    # thread workers). Older 0.x APIs differ and will not work.
+    "textual>=8",
+]
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.30"]
+# Web GUI (browser): FastAPI app + WebSocket live updates.
+web = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+gvs-tui = "gvs_tui.cli:main"
+gvs-tui-web = "gvs_tui.web.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling"
+
+[tool.hatch.build.targets.wheel]
+packages = ["gvs_tui"]

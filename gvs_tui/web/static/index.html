@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>gvs · gorilla vs squad</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20100%20100'%3E%3Ctext%20y='0.9em'%20font-size='90'%3E%F0%9F%A6%8D%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+  <header id="topbar">
+    <div class="brand">
+      <span class="brand-mark">🦍</span>
+      <span class="brand-name">gvs</span>
+      <span class="brand-sub">gorilla vs squad</span>
+    </div>
+    <div class="status-area">
+      <span id="status-pill" class="pill idle">
+        <span class="dot"></span><span id="status-label">idle</span>
+      </span>
+      <span id="run-stats" class="run-stats dim"></span>
+    </div>
+    <div class="top-actions">
+      <button id="btn-run" class="btn primary" title="Start the orchestration loop">▶ Run</button>
+      <button id="btn-pause" class="btn" hidden>Pause</button>
+      <button id="btn-resume" class="btn" hidden>Resume</button>
+      <button id="btn-stop" class="btn danger" hidden>Stop</button>
+      <button id="btn-new" class="btn" title="Start a fresh task">New</button>
+      <button id="btn-runs" class="btn" title="Browse saved runs">Runs</button>
+      <button id="btn-settings" class="btn icon" title="Settings">⚙</button>
+      <span id="conn-dot" class="conn" title="connecting…"></span>
+    </div>
+  </header>
+
+  <main id="layout">
+
+    <!-- ============ chat ============ -->
+    <section id="chat-pane" class="pane">
+      <div class="pane-head">
+        <h2>Manager</h2>
+        <span id="chat-model" class="dim small"></span>
+      </div>
+      <div id="chat-log" class="chat-log">
+        <div class="chat-empty" id="chat-empty">
+          <div class="chat-empty-mark">🦍</div>
+          <p>Describe a task to the manager —<br>it will plan, delegate to workers, and you can watch it all live.</p>
+        </div>
+      </div>
+      <form id="chat-form" class="chat-input" autocomplete="off">
+        <textarea id="chat-text" rows="2"
+          placeholder="Describe the task…  (Enter to send, Shift+Enter for a new line)"></textarea>
+        <button type="submit" class="btn primary" id="btn-send">Send</button>
+      </form>
+    </section>
+
+    <!-- ============ workbench ============ -->
+    <section id="work-pane" class="pane">
+      <div class="tabs">
+        <button class="tab active" data-tab="overview">Overview</button>
+        <button class="tab" data-tab="timeline">Timeline</button>
+        <button class="tab" data-tab="artifact">Artifact</button>
+        <button class="tab" data-tab="files">Files</button>
+      </div>
+      <div id="tab-overview" class="tab-body active"></div>
+      <div id="tab-timeline" class="tab-body"></div>
+      <div id="tab-artifact" class="tab-body"></div>
+      <div id="tab-files" class="tab-body"></div>
+    </section>
+
+  </main>
+
+  <!-- ============ settings modal ============ -->
+  <div id="modal-settings" class="modal" hidden>
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-card">
+      <h2>Settings</h2>
+      <form id="settings-form">
+        <label class="field">
+          <span>Base URL <em>OpenAI-compatible</em></span>
+          <input id="cfg-base_url" placeholder="http://127.0.0.1:1234/v1" spellcheck="false">
+        </label>
+        <label class="field">
+          <span>API key <em>optional for local servers</em></span>
+          <input id="cfg-api_key" type="password" placeholder="sk-… or leave empty" spellcheck="false">
+        </label>
+        <div class="field-row">
+          <label class="field grow">
+            <span>Model</span>
+            <input id="cfg-model" placeholder="model id" spellcheck="false">
+          </label>
+          <button type="button" id="btn-fetch-models" class="btn">Fetch models</button>
+        </div>
+        <select id="cfg-models" class="select" hidden></select>
+        <div class="field-row">
+          <label class="field">
+            <span>Temperature <em>blank = profile default</em></span>
+            <input id="cfg-temperature" type="number" step="0.1" min="0" max="2" placeholder="0.2">
+          </label>
+          <label class="field">
+            <span>Max tokens</span>
+            <input id="cfg-max_tokens" type="number" min="1" placeholder="131072">
+          </label>
+        </div>
+        <div class="field-row">
+          <label class="field">
+            <span>Timeout (s)</span>
+            <input id="cfg-timeout" type="number" min="5" placeholder="900">
+          </label>
+          <label class="field">
+            <span>Max iterations</span>
+            <input id="cfg-max_iters" type="number" min="1" max="100" placeholder="10">
+          </label>
+        </div>
+        <label class="field">
+          <span>Profile</span>
+          <select id="cfg-profile" class="select">
+            <option value="general">general — any task</option>
+            <option value="code">code — runnable program</option>
+            <option value="math">math — exact answer</option>
+            <option value="research">research — written report</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Sample tests <em>code profile, one “input =&gt; output” per line</em></span>
+          <textarea id="cfg-tests" rows="3" placeholder="hello => hello&#10;3 4 => 7" spellcheck="false"></textarea>
+        </label>
+        <div class="modal-actions">
+          <button type="button" id="btn-test-conn" class="btn">Test connection</button>
+          <span id="conn-result" class="small dim"></span>
+          <span class="spacer"></span>
+          <button type="button" class="btn" data-close>Cancel</button>
+          <button type="submit" class="btn primary">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ============ runs modal ============ -->
+  <div id="modal-runs" class="modal" hidden>
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-card">
+      <h2>Saved runs</h2>
+      <div id="runs-list" class="runs-list"></div>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button type="button" class="btn" data-close>Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>
